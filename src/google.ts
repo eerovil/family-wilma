@@ -111,7 +111,7 @@ export class GoogleCalendarService {
     }
     return {
       summary: item.title,
-      description: item.description ?? undefined,
+      description: item.description ?? null,
       start,
       end,
       extendedProperties: {
