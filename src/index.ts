@@ -83,7 +83,7 @@ function mfaPage(error: MfaCodeRequiredError, returnTo: string, returnMethod: "G
 }
 
 function setupPage(email: string): string {
-  const accounts = config.wilmaAccounts.map((account) => `<div class="card"><strong>${escapeHtml(account.id)}</strong><div class="muted">${escapeHtml(account.baseUrl)} · ${escapeHtml(account.username)}</div><ul>${account.profiles.map((profile) => `<li>${escapeHtml(profile.studentNumber)} → ${escapeHtml(profile.child)}</li>`).join("")}</ul><a class="toplink" href="/setup/discover?account=${encodeURIComponent(account.id)}">Tarkista Wilman profiilit</a></div>`).join("");
+  const accounts = config.wilmaAccounts.map((account) => `<div class="card"><strong>${escapeHtml(account.id)}</strong><div class="muted">${escapeHtml(account.baseUrl)} · ${escapeHtml(account.username)}</div><p>Kaikki Wilman profiilit otetaan mukaan automaattisesti.</p>${account.profiles.length ? `<div class="muted">Nimien korvaukset:</div><ul>${account.profiles.map((profile) => `<li>${escapeHtml(profile.studentNumber)} → ${escapeHtml(profile.child)}</li>`).join("")}</ul>` : ""}<a class="toplink" href="/setup/discover?account=${encodeURIComponent(account.id)}">Näytä löydetyt Wilma-profiilit</a></div>`).join("");
   return layout("Asetukset", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Asetukset</h1><h2>Wilma-tilit</h2>${accounts || '<p class="error">WILMA_ACCOUNTS_JSON ei sisällä tilejä.</p>'}<h2>Google</h2><p>${calendar.isConnected() ? "Google Calendar on yhdistetty." : '<a class="toplink" href="/oauth/google/start">Yhdistä Google Calendar</a>'}</p><p class="muted">Kirjautunut: ${escapeHtml(email)}</p><form method="post" action="/logout"><button class="secondary" type="submit">Kirjaudu ulos</button></form>`);
 }
 
@@ -185,7 +185,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const accountId = url.searchParams.get("account") ?? "";
       const profiles = await wilma.discoverProfiles(accountId);
       const list = profiles.map((profile) => `<li><code>${escapeHtml(profile.studentNumber)}</code> — ${escapeHtml(profile.name)}</li>`).join("");
-      return send(res, 200, layout("Wilma-profiilit", `<p><a class="toplink" href="/setup">← Asetuksiin</a></p><h1>Wilma-profiilit: ${escapeHtml(accountId)}</h1><ul>${list}</ul><p class="muted">Muokkaa WILMA_ACCOUNTS_JSON-arvoon studentNumber → child -kartoitus ja käynnistä sovellus uudelleen.</p>`));
+      return send(res, 200, layout("Wilma-profiilit", `<p><a class="toplink" href="/setup">← Asetuksiin</a></p><h1>Wilma-profiilit: ${escapeHtml(accountId)}</h1><ul>${list}</ul><p class="muted">Kaikki listatut profiilit otetaan mukaan automaattisesti Wilman näyttämillä nimillä.</p>`));
     }
     return send(res, 404, layout("Ei löytynyt", '<h1>404</h1><p><a class="toplink" href="/">Etusivulle</a></p>'));
   } catch (error) {

@@ -35,6 +35,8 @@ export interface WilmaBundle {
 
 export class WilmaService {
   private readonly mfaCodes = new Map<string, string>();
+  private readonly pendingDiscoveries = new Map<string, Promise<StudentInfo[]>>();
+  private readonly pendingClients = new Map<string, Promise<WilmaClient>>();
 
   constructor(private readonly config: AppConfig) {}
 
@@ -56,8 +58,14 @@ export class WilmaService {
     const messages: FetchedMessage[] = [];
     const structuredCalendarItems: SourceCalendarItem[] = [];
     for (const account of this.config.wilmaAccounts) {
-      for (const profile of account.profiles) {
-        const client = await WilmaClient.login(this.profile(account, profile), this.mfaCallback(account));
+      const discovered = await this.profilesForFetch(account);
+      const childOverrides = new Map(account.profiles.map((profile) => [profile.studentNumber, profile.child]));
+      const profiles = discovered.map((profile) => ({
+        studentNumber: profile.studentNumber,
+        child: childOverrides.get(profile.studentNumber) ?? (profile.name.trim() || profile.studentNumber),
+      }));
+      for (const profile of profiles) {
+        const client = await this.clientForFetch(account, profile);
         const listed = await client.messages.list("inbox");
         for (const summary of listed) {
           const detail = await client.messages.get(summary.wilmaId);
@@ -88,7 +96,39 @@ export class WilmaService {
       }
     }
     messages.sort((a, b) => b.sentAt.getTime() - a.sentAt.getTime());
+    this.pendingDiscoveries.clear();
+    this.pendingClients.clear();
+    this.mfaCodes.clear();
     return { messages, structuredCalendarItems };
+  }
+
+  private async profilesForFetch(account: WilmaAccountConfig): Promise<StudentInfo[]> {
+    let pending = this.pendingDiscoveries.get(account.id);
+    if (!pending) {
+      pending = WilmaClient.listStudents(this.baseProfile(account), this.mfaCallback(account));
+      this.pendingDiscoveries.set(account.id, pending);
+    }
+    try {
+      return await pending;
+    } catch (error) {
+      if (this.pendingDiscoveries.get(account.id) === pending) this.pendingDiscoveries.delete(account.id);
+      throw error;
+    }
+  }
+
+  private async clientForFetch(account: WilmaAccountConfig, profile: ProfileMapping): Promise<WilmaClient> {
+    const key = `${account.id}\0${profile.studentNumber}`;
+    let pending = this.pendingClients.get(key);
+    if (!pending) {
+      pending = WilmaClient.login(this.profile(account, profile), this.mfaCallback(account));
+      this.pendingClients.set(key, pending);
+    }
+    try {
+      return await pending;
+    } catch (error) {
+      if (this.pendingClients.get(key) === pending) this.pendingClients.delete(key);
+      throw error;
+    }
   }
 
   private account(accountId: string): WilmaAccountConfig {

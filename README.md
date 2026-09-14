@@ -22,7 +22,8 @@ Copy `.env.example` to `.env`.
 
 ### Wilma accounts and children
 
-`WILMA_ACCOUNTS_JSON` is a JSON array. Keep the three concepts separate:
+`WILMA_ACCOUNTS_JSON` is a JSON array. Family Wilma discovers every student/profile
+available to each account and uses the name reported by Wilma as the child name:
 
 ```text
 wilma account -> Wilma student/profile -> household child
@@ -36,25 +37,27 @@ Example:
     "id": "koulu-a",
     "baseUrl": "https://esimerkki.inschool.fi",
     "username": "huoltaja",
-    "password": "...",
-    "profiles": [
-      { "studentNumber": "12345", "child": "Aino" },
-      { "studentNumber": "12346", "child": "Eero" }
-    ]
+    "password": "..."
   },
   {
     "id": "paivakoti",
     "baseUrl": "https://toinen.inschool.fi",
     "username": "huoltaja2",
-    "password": "...",
-    "profiles": [
-      { "studentNumber": "8877", "child": "Aino" }
-    ]
+    "password": "..."
   }
 ]
 ```
 
-The same child can therefore appear in more than one Wilma environment. The **Asetukset** page has a profile-discovery link for each configured account so the student numbers can be checked against Wilma.
+The same child can therefore appear in more than one Wilma environment. No student
+numbers need to be configured manually. The **Asetukset** page shows the profiles
+discovered for each account.
+
+An optional `profiles` array can override a displayed child name. It does not limit which
+profiles are fetched; all profiles discovered from Wilma are included:
+
+```json
+"profiles": [{ "studentNumber": "12345", "child": "Preferred name" }]
+```
 
 Family Wilma uses `@wilm-ai/wilma-client` directly. It only performs the client's read operations for messages/exams; it does not call a mark-read endpoint. Message details have to be fetched for analysis, so if a particular Wilma deployment itself treats opening a message detail as “read”, that server-side behaviour is outside Family Wilma's control and should be verified before relying on unread state.
 

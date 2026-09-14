@@ -48,10 +48,8 @@ function parseAccounts(): WilmaAccountConfig[] {
     }
     if (ids.has(id)) throw new Error(`Duplicate Wilma account id: ${id}`);
     ids.add(id);
-    const rawProfiles = object.profiles;
-    if (!Array.isArray(rawProfiles) || rawProfiles.length === 0) {
-      throw new Error(`Wilma account ${id} needs at least one profile mapping`);
-    }
+    const rawProfiles = object.profiles ?? [];
+    if (!Array.isArray(rawProfiles)) throw new Error(`Wilma account ${id} profiles must be an array`);
     const profiles = rawProfiles.map((profile, profileIndex) => {
       if (!profile || typeof profile !== "object") {
         throw new Error(`Wilma account ${id} profile ${profileIndex} is not an object`);

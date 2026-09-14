@@ -50,9 +50,9 @@ The [cache key](llm-cache.md) is settled in principle; the table is not.
 - Is the analysis stored as a JSON blob, or are `calendarItems` normalised into rows? Normalised
   rows only earn their place if the calendar sync needs to query them independently — which
   depends on question 2.
-- Is anything else forced into the database? Google OAuth refresh tokens have to live somewhere,
-  and so does the student-to-child mapping if it does not live in the environment file. Both are
-  deliberately unresolved: either could reasonably be config instead.
+- Is anything else forced into the database? Google OAuth refresh tokens have to live somewhere.
+  Student profiles are discovered from Wilma on each fetch; optional child-name overrides remain
+  deployment configuration and do not need database state.
 
 **Answer by:** settling question 2 first, since it decides whether sync state needs querying.
 
