@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { google } from "googleapis";
+import { calendar as calendarApi } from "@googleapis/calendar";
+import { OAuth2Client } from "google-auth-library";
 import type { AppConfig } from "./config.js";
 import type { SourceCalendarItem } from "./wilma.js";
 
@@ -52,7 +53,7 @@ export class GoogleCalendarService {
       const merged = { ...token, ...tokens };
       writeFileSync(this.tokenPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
     });
-    const calendar = google.calendar({ version: "v3", auth });
+    const calendar = calendarApi({ version: "v3", auth });
     let created = 0;
     let updated = 0;
     let unchanged = 0;
@@ -88,7 +89,7 @@ export class GoogleCalendarService {
   }
 
   private oauth() {
-    return new google.auth.OAuth2(
+    return new OAuth2Client(
       this.config.googleClientId,
       this.config.googleClientSecret,
       `${this.config.baseUrl}/oauth/google/callback`,

@@ -17,8 +17,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
+    "@googleapis/calendar": "^19.0.0",
     "@wilm-ai/wilma-client": "^1.5.2",
-    "googleapis": "^180.0.0"
+    "google-auth-library": "^11.0.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
