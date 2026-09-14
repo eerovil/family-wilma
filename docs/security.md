@@ -46,12 +46,14 @@ Two consequences worth being deliberate about:
 Anything that would put message bodies on disk — a search index, a local archive, a debug dump —
 needs a much better reason than convenience.
 
-## No tenancy, no admin
+## Authentication and network boundary
 
-One deployment, one household, no user accounts, no roles, no admin panel. Not because those
-would be insecure, but because the complexity they bring is where security bugs live. If this
-ever needs to serve a second household, that is a different application.
+One deployment still serves one household, with no roles or admin panel. Every application page
+and action requires Google sign-in, and only the verified account configured in
+`GOOGLE_ALLOWED_EMAIL` may sign in. The public health endpoint contains no household data.
 
-The app has no authentication of its own. **Bind it to localhost or a private network**, or put
-it behind something that does authenticate. Anyone who can reach it can read the family's
-messages.
+Sessions are random opaque values stored only as SHA-256 hashes in SQLite. They expire one year
+after their most recent use and can be revoked by signing out. In production, cookies are
+host-only, Secure, HTTP-only and SameSite restricted. Google OAuth attempts are bound to the
+browser that started them, expire after ten minutes, and can be used only once. Run the app
+behind HTTPS.

@@ -15,11 +15,12 @@ export class GoogleCalendarService {
     this.tokenPath = join(config.dataDir, "google-oauth-token.json");
   }
 
-  authUrl(): string {
+  authUrl(state: string): string {
     return this.oauth().generateAuthUrl({
       access_type: "offline",
       prompt: "consent",
-      scope: ["https://www.googleapis.com/auth/calendar.events"],
+      state,
+      scope: ["openid", "email", "https://www.googleapis.com/auth/calendar.events"],
     });
   }
 
@@ -27,10 +28,18 @@ export class GoogleCalendarService {
     return Boolean(this.loadToken());
   }
 
-  async handleCallback(code: string): Promise<void> {
+  async handleCallback(code: string): Promise<string> {
     const client = this.oauth();
     const { tokens } = await client.getToken(code);
+    if (!tokens.id_token) throw new Error("Google did not return an ID token");
+    const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: this.config.googleClientId });
+    const payload = ticket.getPayload();
+    const email = payload?.email?.toLowerCase();
+    if (!payload || !email || payload.email_verified !== true || email !== this.config.googleAllowedEmail) {
+      throw new UnauthorizedGoogleAccountError();
+    }
     writeFileSync(this.tokenPath, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+    return email;
   }
 
   async sync(items: SourceCalendarItem[]): Promise<{ created: number; updated: number; unchanged: number }> {
@@ -140,6 +149,13 @@ export class GoogleCalendarService {
     }
     return localHelsinkiDateTime(existing.start?.dateTime) === desired.start.dateTime
       && localHelsinkiDateTime(existing.end?.dateTime) === desired.end.dateTime;
+  }
+}
+
+export class UnauthorizedGoogleAccountError extends Error {
+  constructor() {
+    super("Google account is not allowed");
+    this.name = "UnauthorizedGoogleAccountError";
   }
 }
 

@@ -3,6 +3,8 @@ import { URL } from "node:url";
 import { loadConfig } from "./config.js";
 import { MessageAnalyzer } from "./analysis.js";
 import { GoogleCalendarService } from "./google.js";
+import { UnauthorizedGoogleAccountError } from "./google.js";
+import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, sessionCookie, sessionToken, SessionStore } from "./auth.js";
 import { AnalysisStore, type CalendarItem } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
 
@@ -11,6 +13,8 @@ const store = new AnalysisStore(config.dataDir);
 const analyzer = new MessageAnalyzer(config.anthropicApiKey, store);
 const wilma = new WilmaService(config);
 const calendar = new GoogleCalendarService(config);
+const sessions = new SessionStore(config.dataDir);
+const secureCookies = config.baseUrl.startsWith("https://");
 
 interface AnalyzedMessage {
   message: FetchedMessage;
@@ -78,9 +82,9 @@ function mfaPage(error: MfaCodeRequiredError, returnTo: string, returnMethod: "G
 <form method="post" action="/mfa"><input type="hidden" name="accountId" value="${escapeHtml(error.accountId)}"><input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}"><input type="hidden" name="returnMethod" value="${returnMethod}"><label>Koodi<input name="code" inputmode="numeric" autocomplete="one-time-code" required></label><p><button type="submit">Jatka</button></p></form>`);
 }
 
-function setupPage(): string {
+function setupPage(email: string): string {
   const accounts = config.wilmaAccounts.map((account) => `<div class="card"><strong>${escapeHtml(account.id)}</strong><div class="muted">${escapeHtml(account.baseUrl)} · ${escapeHtml(account.username)}</div><ul>${account.profiles.map((profile) => `<li>${escapeHtml(profile.studentNumber)} → ${escapeHtml(profile.child)}</li>`).join("")}</ul><a class="toplink" href="/setup/discover?account=${encodeURIComponent(account.id)}">Tarkista Wilman profiilit</a></div>`).join("");
-  return layout("Asetukset", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Asetukset</h1><h2>Wilma-tilit</h2>${accounts || '<p class="error">WILMA_ACCOUNTS_JSON ei sisällä tilejä.</p>'}<h2>Google</h2><p>${calendar.isConnected() ? "Google Calendar on yhdistetty." : '<a class="toplink" href="/oauth/google/start">Yhdistä Google Calendar</a>'}</p>`);
+  return layout("Asetukset", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Asetukset</h1><h2>Wilma-tilit</h2>${accounts || '<p class="error">WILMA_ACCOUNTS_JSON ei sisällä tilejä.</p>'}<h2>Google</h2><p>${calendar.isConnected() ? "Google Calendar on yhdistetty." : '<a class="toplink" href="/oauth/google/start">Yhdistä Google Calendar</a>'}</p><p class="muted">Kirjautunut: ${escapeHtml(email)}</p><form method="post" action="/logout"><button class="secondary" type="submit">Kirjaudu ulos</button></form>`);
 }
 
 async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
@@ -113,12 +117,46 @@ function messageCalendarItems(analyzed: AnalyzedMessage[]): SourceCalendarItem[]
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", config.baseUrl);
   try {
-    if (req.method === "GET" && url.pathname === "/") return send(res, 200, home());
-    if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage());
     if (req.method === "GET" && url.pathname === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
       return;
+    }
+    if (req.method === "GET" && url.pathname === "/oauth/google/start") {
+      const state = sessions.createOAuthState(url.searchParams.get("returnTo"));
+      res.setHeader("set-cookie", oauthStateCookie(state, secureCookies));
+      return redirect(res, calendar.authUrl(state));
+    }
+    if (req.method === "GET" && url.pathname === "/oauth/google/callback") {
+      const code = url.searchParams.get("code");
+      const state = url.searchParams.get("state") ?? "";
+      const browserState = oauthStateToken(req.headers.cookie, secureCookies);
+      res.setHeader("set-cookie", clearOAuthStateCookie(secureCookies));
+      if (!browserState || browserState !== state) {
+        return send(res, 400, layout("Google OAuth", '<div class="error">Google-kirjautumisen vahvistus epäonnistui.</div>'));
+      }
+      const returnTo = sessions.consumeOAuthState(state);
+      if (!code || !returnTo) return send(res, 400, layout("Google OAuth", '<div class="error">Google-kirjautumisen vahvistus epäonnistui.</div>'));
+      const email = await calendar.handleCallback(code);
+      const token = sessions.createSession();
+      res.setHeader("set-cookie", [clearOAuthStateCookie(secureCookies), sessionCookie(token, secureCookies)]);
+      return redirect(res, returnTo);
+    }
+
+    const token = sessionToken(req.headers.cookie, secureCookies);
+    const signedIn = sessions.authenticate(token);
+    if (!signedIn) {
+      const returnTo = req.method === "GET" ? `${url.pathname}${url.search}` : "/";
+      return redirect(res, `/oauth/google/start?returnTo=${encodeURIComponent(returnTo)}`);
+    }
+    if (token) res.setHeader("set-cookie", sessionCookie(token, secureCookies));
+
+    if (req.method === "GET" && url.pathname === "/") return send(res, 200, home());
+    if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage(config.googleAllowedEmail));
+    if (req.method === "POST" && url.pathname === "/logout") {
+      sessions.destroySession(token);
+      res.setHeader("set-cookie", clearSessionCookie(secureCookies));
+      return send(res, 200, layout("Kirjauduttu ulos", '<h1>Kirjauduttu ulos</h1><p><a class="toplink" href="/oauth/google/start">Kirjaudu uudelleen Googlella</a></p>'));
     }
     if (req.method === "POST" && url.pathname === "/messages") {
       const bundle = await wilma.fetchAll();
@@ -149,15 +187,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const list = profiles.map((profile) => `<li><code>${escapeHtml(profile.studentNumber)}</code> — ${escapeHtml(profile.name)}</li>`).join("");
       return send(res, 200, layout("Wilma-profiilit", `<p><a class="toplink" href="/setup">← Asetuksiin</a></p><h1>Wilma-profiilit: ${escapeHtml(accountId)}</h1><ul>${list}</ul><p class="muted">Muokkaa WILMA_ACCOUNTS_JSON-arvoon studentNumber → child -kartoitus ja käynnistä sovellus uudelleen.</p>`));
     }
-    if (req.method === "GET" && url.pathname === "/oauth/google/start") return redirect(res, calendar.authUrl());
-    if (req.method === "GET" && url.pathname === "/oauth/google/callback") {
-      const code = url.searchParams.get("code");
-      if (!code) return send(res, 400, layout("Google OAuth", '<div class="error">Google ei palauttanut valtuutuskoodia.</div>'));
-      await calendar.handleCallback(code);
-      return redirect(res, "/setup");
-    }
     return send(res, 404, layout("Ei löytynyt", '<h1>404</h1><p><a class="toplink" href="/">Etusivulle</a></p>'));
   } catch (error) {
+    if (error instanceof UnauthorizedGoogleAccountError) {
+      return send(res, 403, layout("Pääsy estetty", '<div class="error">Tällä Google-tilillä ei ole pääsyä Family Wilmaan.</div>'));
+    }
     if (error instanceof MfaCodeRequiredError) {
       const returnMethod = req.method === "POST" ? "POST" : "GET";
       return send(res, 409, mfaPage(error, `${url.pathname}${url.search}`, returnMethod));

@@ -19,6 +19,7 @@ export interface AppConfig {
   googleClientId: string;
   googleClientSecret: string;
   googleCalendarId: string;
+  googleAllowedEmail: string;
   wilmaAccounts: WilmaAccountConfig[];
 }
 
@@ -78,6 +79,7 @@ export function loadConfig(): AppConfig {
     googleClientId: required("GOOGLE_CLIENT_ID"),
     googleClientSecret: required("GOOGLE_CLIENT_SECRET"),
     googleCalendarId: process.env.GOOGLE_CALENDAR_ID?.trim() || "primary",
+    googleAllowedEmail: required("GOOGLE_ALLOWED_EMAIL").toLowerCase(),
     wilmaAccounts: parseAccounts(),
   };
 }

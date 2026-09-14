@@ -91,10 +91,14 @@ Set:
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 GOOGLE_CALENDAR_ID=primary
+GOOGLE_ALLOWED_EMAIL=you@example.com
 APP_BASE_URL=https://family-wilma.example.com
 ```
 
-Then open **Asetukset → Yhdistä Google Calendar** once.
+Google OAuth signs into the app and grants Calendar access in the same consent flow. Only
+`GOOGLE_ALLOWED_EMAIL` may sign in. Sessions are revocable, stored as hashed opaque tokens
+in SQLite, and remain valid for one year after their most recent use. Sign out from
+**Asetukset**.
 
 Family Wilma puts a stable source id and `family-wilma-v1` ownership marker in each event's private `extendedProperties`. Repeated syncs update the existing managed event instead of creating duplicates, and events not created by Family Wilma are never modified.
 
@@ -123,7 +127,9 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-The compose file binds port 3000 to localhost only. Put a private reverse proxy/VPN in front if remote access is needed. The app has no user account system of its own, and anybody who can reach it can see household data.
+The compose file binds `HOST_PORT` (3000 by default) to localhost only. Put an HTTPS
+reverse proxy in front for remote access. Application pages require the Google account in
+`GOOGLE_ALLOWED_EMAIL`; the health endpoint remains public for monitoring.
 
 The named volume stores only:
 

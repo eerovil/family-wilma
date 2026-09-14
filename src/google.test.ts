@@ -17,6 +17,7 @@ function service() {
     googleClientId: "test",
     googleClientSecret: "test",
     googleCalendarId: "primary",
+    googleAllowedEmail: "eero@example.com",
     wilmaAccounts: [],
   };
   return { calendar: new GoogleCalendarService(config), dataDir };
