@@ -72,10 +72,10 @@ function messagesPage(messages: AnalyzedMessage[]): string {
   return layout("Kaikki viestit", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kaikki viestit</h1>${cards || '<p class="muted">Ei viestejä.</p>'}`);
 }
 
-function mfaPage(error: MfaCodeRequiredError, returnTo: string): string {
+function mfaPage(error: MfaCodeRequiredError, returnTo: string, returnMethod: "GET" | "POST"): string {
   return layout("Wilma MFA", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Wilma tarvitsee MFA-koodin</h1>
 <p>Tilille <strong>${escapeHtml(error.accountId)}</strong> tarvitaan kertakäyttöinen vahvistuskoodi. Koodia ei tallenneta levylle.</p>
-<form method="post" action="/mfa"><input type="hidden" name="accountId" value="${escapeHtml(error.accountId)}"><input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}"><label>Koodi<input name="code" inputmode="numeric" autocomplete="one-time-code" required></label><p><button type="submit">Jatka</button></p></form>`);
+<form method="post" action="/mfa"><input type="hidden" name="accountId" value="${escapeHtml(error.accountId)}"><input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}"><input type="hidden" name="returnMethod" value="${returnMethod}"><label>Koodi<input name="code" inputmode="numeric" autocomplete="one-time-code" required></label><p><button type="submit">Jatka</button></p></form>`);
 }
 
 function setupPage(): string {
@@ -94,8 +94,8 @@ function send(res: ServerResponse, status: number, html: string): void {
   res.end(html);
 }
 
-function redirect(res: ServerResponse, location: string): void {
-  res.writeHead(303, { location, "cache-control": "no-store" });
+function redirect(res: ServerResponse, location: string, status = 303): void {
+  res.writeHead(status, { location, "cache-control": "no-store" });
   res.end();
 }
 
@@ -137,8 +137,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const accountId = form.get("accountId") ?? "";
       const code = form.get("code") ?? "";
       const returnTo = form.get("returnTo") || "/";
+      const returnMethod = form.get("returnMethod") === "POST" ? "POST" : "GET";
       wilma.submitMfaCode(accountId, code);
-      return redirect(res, returnTo.startsWith("/") ? returnTo : "/");
+      const safeReturnTo = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
+      return redirect(res, safeReturnTo, returnMethod === "POST" ? 307 : 303);
     }
     if (req.method === "GET" && url.pathname === "/setup/discover") {
       const accountId = url.searchParams.get("account") ?? "";
@@ -155,7 +157,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
     return send(res, 404, layout("Ei löytynyt", '<h1>404</h1><p><a class="toplink" href="/">Etusivulle</a></p>'));
   } catch (error) {
-    if (error instanceof MfaCodeRequiredError) return send(res, 409, mfaPage(error, url.pathname));
+    if (error instanceof MfaCodeRequiredError) {
+      const returnMethod = req.method === "POST" ? "POST" : "GET";
+      return send(res, 409, mfaPage(error, `${url.pathname}${url.search}`, returnMethod));
+    }
     console.error(`request failed: ${error instanceof Error ? error.name : "Error"}`);
     return send(res, 500, layout("Virhe", '<div class="error">Toiminto epäonnistui. Tarkista palvelimen asetukset ja yritä uudelleen.</div><p><a class="toplink" href="/">Etusivulle</a></p>'));
   }
