@@ -1,4 +1,5 @@
-# Skeleton only — there is no src/ yet, so this does not build today.
+# Skeleton. This builds and runs today, but the entry point is a placeholder
+# that prints a message and exits — there is no application yet.
 
 FROM node:22-slim AS build
 WORKDIR /app

@@ -57,7 +57,11 @@ a small SQLite file holding the analysis cache.
 
 ## Getting started
 
-There is nothing to run yet. When there is, it will be:
+`npm install && npm run build && npm start` works on Node 22, and `docker compose up` builds
+and runs — but the entry point is a placeholder that prints a message and exits. There is no
+application behind it yet.
+
+When there is, running it will be:
 
 ```sh
 cp .env.example .env   # fill in the Wilma logins, the Anthropic key, the Google credentials
