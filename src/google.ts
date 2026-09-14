@@ -5,6 +5,7 @@ import type { AppConfig } from "./config.js";
 import type { SourceCalendarItem } from "./wilma.js";
 
 const MANAGED_BY = "family-wilma-v1";
+const HELSINKI_TIME_ZONE = "Europe/Helsinki";
 
 export class GoogleCalendarService {
   private readonly tokenPath: string;
@@ -94,12 +95,15 @@ export class GoogleCalendarService {
   }
 
   private eventFor(item: SourceCalendarItem) {
-    const start = item.time ? { dateTime: `${item.date}T${item.time}:00`, timeZone: "Europe/Helsinki" } : { date: item.date };
+    const start = item.time
+      ? { dateTime: `${item.date}T${item.time}:00`, timeZone: HELSINKI_TIME_ZONE }
+      : { date: item.date };
     let end: { date?: string; dateTime?: string; timeZone?: string };
     if (item.time) {
-      const startDate = new Date(`${item.date}T${item.time}:00+03:00`);
-      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-      end = { dateTime: endDate.toISOString(), timeZone: "Europe/Helsinki" };
+      end = {
+        dateTime: addOneHourToLocalDateTime(item.date, item.time),
+        timeZone: HELSINKI_TIME_ZONE,
+      };
     } else {
       const exclusiveEnd = new Date(`${item.endDate ?? item.date}T00:00:00Z`);
       exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1);
@@ -119,10 +123,47 @@ export class GoogleCalendarService {
     };
   }
 
-  private sameEvent(existing: { summary?: string | null; description?: string | null; start?: unknown; end?: unknown }, desired: ReturnType<GoogleCalendarService["eventFor"]>): boolean {
-    return existing.summary === desired.summary
-      && (existing.description ?? "") === (desired.description ?? "")
-      && JSON.stringify(existing.start ?? {}) === JSON.stringify(desired.start)
-      && JSON.stringify(existing.end ?? {}) === JSON.stringify(desired.end);
+  private sameEvent(
+    existing: {
+      summary?: string | null;
+      description?: string | null;
+      start?: { date?: string | null; dateTime?: string | null } | null;
+      end?: { date?: string | null; dateTime?: string | null } | null;
+    },
+    desired: ReturnType<GoogleCalendarService["eventFor"]>,
+  ): boolean {
+    if (existing.summary !== desired.summary || (existing.description ?? "") !== (desired.description ?? "")) {
+      return false;
+    }
+    if (desired.start.date) {
+      return existing.start?.date === desired.start.date && existing.end?.date === desired.end.date;
+    }
+    return localHelsinkiDateTime(existing.start?.dateTime) === desired.start.dateTime
+      && localHelsinkiDateTime(existing.end?.dateTime) === desired.end.dateTime;
   }
+}
+
+function addOneHourToLocalDateTime(date: string, time: string): string {
+  const naive = new Date(`${date}T${time}:00Z`);
+  if (Number.isNaN(naive.getTime())) throw new Error(`Invalid calendar time: ${date} ${time}`);
+  naive.setUTCHours(naive.getUTCHours() + 1);
+  return naive.toISOString().slice(0, 19);
+}
+
+function localHelsinkiDateTime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: HELSINKI_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((candidate) => candidate.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:${part("second")}`;
 }
