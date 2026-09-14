@@ -1,0 +1,21 @@
+# Skeleton only — there is no application to run yet.
+#
+# One service, one volume. The port is published on the loopback address on
+# purpose: the app has no authentication of its own, so anyone who can reach it
+# can read the family's messages. See docs/security.md.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATABASE_PATH: /app/data/family-wilma.db
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - wilma-data:/app/data
+
+volumes:
+  wilma-data:

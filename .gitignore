@@ -1,0 +1,17 @@
+node_modules/
+dist/
+
+# Secrets — Wilma passwords, API keys, OAuth credentials.
+.env
+.env.*
+!.env.example
+
+# The analysis cache and anything else written at runtime.
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+*.log
+.DS_Store
