@@ -117,7 +117,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage());
     if (req.method === "GET" && url.pathname === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ ok: true }));
+      res.end(JSON.stringify({ ok: true }));
+      return;
     }
     if (req.method === "POST" && url.pathname === "/messages") {
       const bundle = await wilma.fetchAll();
