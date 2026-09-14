@@ -38,7 +38,8 @@ export class GoogleCalendarService {
     if (!payload || !email || payload.email_verified !== true || email !== this.config.googleAllowedEmail) {
       throw new UnauthorizedGoogleAccountError();
     }
-    writeFileSync(this.tokenPath, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+    const merged = { ...(this.loadToken() ?? {}), ...tokens };
+    writeFileSync(this.tokenPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
     return email;
   }
 

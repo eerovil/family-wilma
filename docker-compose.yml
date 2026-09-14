@@ -5,6 +5,7 @@ services:
     env_file: .env
     environment:
       DATA_DIR: /app/data
+      HOST: 0.0.0.0
       PORT: 3000
     ports:
       - "127.0.0.1:${HOST_PORT:-3000}:3000"

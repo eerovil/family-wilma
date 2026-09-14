@@ -4,7 +4,7 @@ import { loadConfig } from "./config.js";
 import { MessageAnalyzer } from "./analysis.js";
 import { GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
-import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, sessionCookie, sessionToken, SessionStore } from "./auth.js";
+import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
 import { AnalysisStore, type CalendarItem } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
 
@@ -178,7 +178,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const returnTo = form.get("returnTo") || "/";
       const returnMethod = form.get("returnMethod") === "POST" ? "POST" : "GET";
       wilma.submitMfaCode(accountId, code);
-      const safeReturnTo = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
+      const safeReturnTo = safeReturnPath(returnTo);
       return redirect(res, safeReturnTo, returnMethod === "POST" ? 307 : 303);
     }
     if (req.method === "GET" && url.pathname === "/setup/discover") {
@@ -202,6 +202,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 }
 
 const server = createServer((req, res) => { void handle(req, res); });
-server.listen(config.port, "0.0.0.0", () => {
+server.listen(config.port, config.host, () => {
   console.log(`family-wilma listening on port ${config.port}`);
 });

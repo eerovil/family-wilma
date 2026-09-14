@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -12,7 +12,7 @@ function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function safeReturnTo(value: string | null): string {
+export function safeReturnPath(value: string | null): string {
   return value?.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !/[\r\n]/.test(value)
     ? value
     : "/";
@@ -22,8 +22,11 @@ export class SessionStore {
   private readonly db: DatabaseSync;
 
   constructor(dataDir: string, private readonly now: () => number = () => Math.floor(Date.now() / 1000)) {
-    mkdirSync(dataDir, { recursive: true });
-    this.db = new DatabaseSync(join(dataDir, "family-wilma.sqlite"));
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    chmodSync(dataDir, 0o700);
+    const databasePath = join(dataDir, "family-wilma.sqlite");
+    this.db = new DatabaseSync(databasePath);
+    chmodSync(databasePath, 0o600);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS oauth_states (
@@ -45,7 +48,7 @@ export class SessionStore {
     const now = this.now();
     this.db.prepare("DELETE FROM oauth_states WHERE expires_at <= ?").run(now);
     this.db.prepare("INSERT INTO oauth_states (state_hash, return_to, expires_at) VALUES (?, ?, ?)")
-      .run(hash(state), safeReturnTo(returnTo), now + OAUTH_STATE_MAX_AGE_SECONDS);
+      .run(hash(state), safeReturnPath(returnTo), now + OAUTH_STATE_MAX_AGE_SECONDS);
     return state;
   }
 

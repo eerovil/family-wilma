@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,8 @@ test("OAuth state is one-time, expiring, and keeps only safe return paths", () =
   let now = 100;
   try {
     const store = new SessionStore(dir, () => now);
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    assert.equal(statSync(join(dir, "family-wilma.sqlite")).mode & 0o777, 0o600);
     const state = store.createOAuthState("/setup");
     assert.equal(store.consumeOAuthState(state), "/setup");
     assert.equal(store.consumeOAuthState(state), null);

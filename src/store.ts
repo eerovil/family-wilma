@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -28,8 +28,11 @@ export class AnalysisStore {
   private readonly db: DatabaseSync;
 
   constructor(dataDir: string) {
-    mkdirSync(dataDir, { recursive: true });
-    this.db = new DatabaseSync(join(dataDir, "family-wilma.sqlite"));
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    chmodSync(dataDir, 0o700);
+    const databasePath = join(dataDir, "family-wilma.sqlite");
+    this.db = new DatabaseSync(databasePath);
+    chmodSync(databasePath, 0o600);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS message_analysis (

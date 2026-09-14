@@ -117,6 +117,9 @@ For development:
 npm run dev
 ```
 
+The bare Node process binds to `HOST=127.0.0.1` by default. Docker Compose overrides this
+inside the container while publishing only to the host's loopback interface.
+
 The health endpoint is `GET /healthz`.
 
 ## Docker Compose

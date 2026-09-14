@@ -13,6 +13,7 @@ export interface WilmaAccountConfig {
 
 export interface AppConfig {
   port: number;
+  host: string;
   baseUrl: string;
   dataDir: string;
   anthropicApiKey: string;
@@ -73,6 +74,7 @@ export function loadConfig(): AppConfig {
   const baseUrl = (process.env.APP_BASE_URL ?? `http://localhost:${port}`).trim().replace(/\/$/, "");
   return {
     port,
+    host: process.env.HOST?.trim() || "127.0.0.1",
     baseUrl,
     dataDir: process.env.DATA_DIR?.trim() || "./data",
     anthropicApiKey: required("ANTHROPIC_API_KEY"),
