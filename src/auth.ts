@@ -118,11 +118,11 @@ function cookieName(name: string, secure: boolean): string {
 }
 
 export function sessionCookie(token: string, secure: boolean): string {
-  return `${cookieName(SESSION_COOKIE, secure)}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MAX_AGE_SECONDS}${secure ? "; Secure" : ""}`;
+  return `${cookieName(SESSION_COOKIE, secure)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}${secure ? "; Secure" : ""}`;
 }
 
 export function clearSessionCookie(secure: boolean): string {
-  return `${cookieName(SESSION_COOKIE, secure)}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`;
+  return `${cookieName(SESSION_COOKIE, secure)}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`;
 }
 
 export function oauthStateCookie(state: string, secure: boolean): string {

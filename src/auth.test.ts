@@ -47,11 +47,12 @@ test("sessions are revocable and their one-year expiry slides on use", () => {
   }
 });
 
-test("session cookie helpers use a secure HTTP-only same-site cookie", () => {
+test("session cookie survives the top-level redirect after Google OAuth", () => {
   const cookie = sessionCookie("secret-token", true);
   assert.match(cookie, /HttpOnly/);
   assert.match(cookie, /__Host-family_wilma_session=/);
-  assert.match(cookie, /SameSite=Strict/);
+  assert.match(cookie, /SameSite=Lax/);
+  assert.doesNotMatch(cookie, /SameSite=Strict/);
   assert.match(cookie, /Secure/);
   assert.equal(sessionToken(`other=x; ${cookie.split(";")[0]}`, true), "secret-token");
   assert.equal(sessionToken("family_wilma_session=attacker", true), null);
