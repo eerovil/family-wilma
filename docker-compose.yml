@@ -1,18 +1,10 @@
-# Skeleton. `docker compose up` works, but the container only prints a
-# placeholder message and exits — there is no application yet.
-#
-# One service, one volume. The port is published on the loopback address on
-# purpose: the app has no authentication of its own, so anyone who can reach it
-# can read the family's messages. See docs/security.md.
-
 services:
   app:
     build: .
     restart: unless-stopped
     env_file: .env
     environment:
-      HOST: 0.0.0.0
-      DATABASE_PATH: /app/data/family-wilma.db
+      DATA_DIR: /app/data
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
