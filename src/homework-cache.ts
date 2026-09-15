@@ -60,12 +60,12 @@ export class HomeworkCacheStore {
     this.put("wilma", value, updatedAt);
   }
 
-  getPedanet(): CachedValue<PedanetHomework> | null {
+  getPedanet(): CachedValue<PedanetHomework[]> | null {
     if (!this.identities.pedanet) return null;
-    return this.get("pedanet", isPedanetHomework);
+    return this.get("pedanet", isPedanetHomeworkArray);
   }
 
-  putPedanet(value: PedanetHomework, updatedAt: string): void {
+  putPedanet(value: PedanetHomework[], updatedAt: string): void {
     if (!this.identities.pedanet) return;
     this.put("pedanet", value, updatedAt);
   }
@@ -110,6 +110,10 @@ function isFetchedHomeworkArray(value: unknown): value is FetchedHomework[] {
 function isPedanetHomework(value: unknown): value is PedanetHomework {
   return isRecordWithStrings(value, ["date", "heading", "content", "sourceUrl"])
     && value.personalizationStatus === "unresolved";
+}
+
+function isPedanetHomeworkArray(value: unknown): value is PedanetHomework[] {
+  return Array.isArray(value) && value.every(isPedanetHomework);
 }
 
 function isRecordWithStrings(value: unknown, fields: string[]): value is Record<string, string> {

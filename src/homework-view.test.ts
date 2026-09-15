@@ -20,13 +20,19 @@ function homework(overrides: Partial<FetchedHomework>): FetchedHomework {
 
 test("homework view renders Peda.net first and one newest-first Wilma list", () => {
   const html = renderHomeworkContent({
-    pedanet: {
+    pedanet: [{
       date: "2026-09-15",
       heading: "ti 15.9.",
       content: "A: s. 18\nB: s. 20",
       sourceUrl: "https://example.test/homework",
       personalizationStatus: "unresolved",
-    },
+    }, {
+      date: "2026-09-14",
+      heading: "ma 14.9.",
+      content: "Older Peda task",
+      sourceUrl: "https://example.test/homework",
+      personalizationStatus: "unresolved",
+    }],
     pedanetSourceUrl: "https://example.test/homework",
     homework: [
       homework({ child: "Einari", date: "2026-09-15", homework: "Newest <task>" }),
@@ -37,12 +43,13 @@ test("homework view renders Peda.net first and one newest-first Wilma list", () 
   assert.ok(html.indexOf("Einari · Peda.net") < html.indexOf("Newest &lt;task&gt;"));
   assert.ok(html.indexOf("Newest &lt;task&gt;") < html.indexOf("Older task"));
   assert.match(html, /A: s\. 18\nB: s\. 20/);
+  assert.ok(html.indexOf("ti 15.9.") < html.indexOf("ma 14.9."));
   assert.match(HOMEWORK_VIEW_CSS, /overflow-wrap:anywhere/);
 });
 
 test("Peda.net error does not hide Wilma homework", () => {
   const html = renderHomeworkContent({
-    pedanet: null,
+    pedanet: [],
     pedanetError: true,
     pedanetSourceUrl: "https://example.test/homework",
     homework: [homework({ homework: "Still visible" })],

@@ -10,7 +10,7 @@ export interface HomeworkRefreshSnapshot {
   homework: FetchedHomework[];
   wilmaUpdatedAt: string | null;
   wilmaError: boolean;
-  pedanet: PedanetHomework | null;
+  pedanet: PedanetHomework[];
   pedanetUpdatedAt: string | null;
   pedanetError: boolean;
   mfaAccountId: string | null;
@@ -20,7 +20,7 @@ interface HomeworkRefreshDependencies {
   cache: HomeworkCacheStore;
   waitForWilmaTurn?: () => Promise<void>;
   fetchWilma(): Promise<FetchedHomework[]>;
-  fetchPedanet?: () => Promise<PedanetHomework>;
+  fetchPedanet?: () => Promise<PedanetHomework[]>;
   mfaAccountId?(error: unknown): string | null;
   reportError?(error: unknown, source: "wilma" | "pedanet"): void;
   now?: () => Date;
@@ -39,7 +39,7 @@ export class HomeworkRefreshJob {
       homework: wilma?.value ?? [],
       wilmaUpdatedAt: wilma?.updatedAt ?? null,
       wilmaError: false,
-      pedanet: pedanet?.value ?? null,
+      pedanet: pedanet?.value ?? [],
       pedanetUpdatedAt: pedanet?.updatedAt ?? null,
       pedanetError: false,
       mfaAccountId: null,
@@ -75,7 +75,7 @@ export class HomeworkRefreshJob {
   }
 
   snapshot(): HomeworkRefreshSnapshot {
-    return { ...this.status, homework: [...this.status.homework] };
+    return { ...this.status, homework: [...this.status.homework], pedanet: [...this.status.pedanet] };
   }
 
   async wait(): Promise<void> {

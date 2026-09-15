@@ -38,13 +38,13 @@ test("homework refresh serves durable cache while one coalesced refresh runs", a
     const job = new HomeworkRefreshJob({
       cache: store,
       fetchWilma: async () => { calls += 1; return await pending.promise; },
-      fetchPedanet: async () => ({
+      fetchPedanet: async () => [{
         date: "2026-09-15",
         heading: "ti 15.9.",
         content: "Fresh Peda",
         sourceUrl: "https://example.test/homework",
         personalizationStatus: "unresolved",
-      }),
+      }],
       now: () => new Date("2026-09-15T12:00:00.000Z"),
     });
 
@@ -59,9 +59,9 @@ test("homework refresh serves durable cache while one coalesced refresh runs", a
     await job.wait();
     assert.equal(job.snapshot().state, "success");
     assert.equal(job.snapshot().homework[0]?.homework, "Fresh");
-    assert.equal(job.snapshot().pedanet?.content, "Fresh Peda");
+    assert.equal(job.snapshot().pedanet[0]?.content, "Fresh Peda");
     assert.equal(cache(dir).getWilma()?.value[0]?.homework, "Fresh");
-    assert.equal(cache(dir).getPedanet()?.value.content, "Fresh Peda");
+    assert.equal(cache(dir).getPedanet()?.value[0]?.content, "Fresh Peda");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -130,10 +130,10 @@ test("homework refresh stays queued server-side and refreshes Peda while waiting
       fetchWilma: async () => { wilmaCalls += 1; return [item("Fresh")]; },
       fetchPedanet: async () => {
         pedanetCalls += 1;
-        return {
+        return [{
           date: "2026-09-15", heading: "ti 15.9.", content: "Peda task",
           sourceUrl: "https://example.test/homework", personalizationStatus: "unresolved",
-        };
+        }];
       },
     });
 
@@ -142,8 +142,8 @@ test("homework refresh stays queued server-side and refreshes Peda while waiting
     assert.equal(job.snapshot().state, "running");
     assert.equal(wilmaCalls, 0);
     assert.equal(pedanetCalls, 1);
-    assert.equal(job.snapshot().pedanet?.content, "Peda task");
-    assert.equal(cache(dir).getPedanet()?.value.content, "Peda task");
+    assert.equal(job.snapshot().pedanet[0]?.content, "Peda task");
+    assert.equal(cache(dir).getPedanet()?.value[0]?.content, "Peda task");
     turn.resolve();
     await job.wait();
     assert.equal(wilmaCalls, 1);
@@ -158,10 +158,10 @@ test("automatic homework refresh skips fresh sources and refreshes stale sources
   try {
     const store = cache(dir);
     store.putWilma([item("Stored")], "2026-09-15T12:14:59.000Z");
-    store.putPedanet({
+    store.putPedanet([{
       date: "2026-09-15", heading: "ti 15.9.", content: "Stored Peda",
       sourceUrl: "https://example.test/homework", personalizationStatus: "unresolved",
-    }, "2026-09-15T12:00:00.000Z");
+    }], "2026-09-15T12:00:00.000Z");
     let wilmaCalls = 0;
     let pedanetCalls = 0;
     const job = new HomeworkRefreshJob({
@@ -169,10 +169,10 @@ test("automatic homework refresh skips fresh sources and refreshes stale sources
       fetchWilma: async () => { wilmaCalls += 1; return [item("Fresh")]; },
       fetchPedanet: async () => {
         pedanetCalls += 1;
-        return {
+        return [{
           date: "2026-09-15", heading: "ti 15.9.", content: "Fresh Peda",
           sourceUrl: "https://example.test/homework", personalizationStatus: "unresolved",
-        };
+        }];
       },
       now: () => new Date("2026-09-15T12:15:00.000Z"),
     });
@@ -197,10 +197,10 @@ test("automatic homework refresh is a no-op while every configured source is fre
   try {
     const store = cache(dir);
     store.putWilma([item("Stored")], "2026-09-15T12:14:59.000Z");
-    store.putPedanet({
+    store.putPedanet([{
       date: "2026-09-15", heading: "ti 15.9.", content: "Stored Peda",
       sourceUrl: "https://example.test/homework", personalizationStatus: "unresolved",
-    }, "2026-09-15T12:14:59.000Z");
+    }], "2026-09-15T12:14:59.000Z");
     let calls = 0;
     const job = new HomeworkRefreshJob({
       cache: store,

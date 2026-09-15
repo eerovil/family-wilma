@@ -60,7 +60,7 @@ const pedanetHomework = config.pedanetHomeworkUrl && config.pedanetHomeworkModul
 const homeworkCache = new HomeworkCacheStore(config.dataDir, {
   wilma: wilmaCacheIdentity(config.wilmaAccounts),
   pedanet: pedanetHomework
-    ? homeworkCacheIdentity([config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId])
+    ? homeworkCacheIdentity([config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId, "recent-seven-days-v1"])
     : null,
 });
 const homeworkRefresh = new HomeworkRefreshJob({
@@ -71,7 +71,7 @@ const homeworkRefresh = new HomeworkRefreshJob({
     }
   },
   fetchWilma: () => wilma.fetchHomework(),
-  ...(pedanetHomework ? { fetchPedanet: () => pedanetHomework.latest() } : {}),
+  ...(pedanetHomework ? { fetchPedanet: () => pedanetHomework.recent() } : {}),
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error, source) => reportError(error, { operation: `homework.${source}.fetch` }),
 });
@@ -287,8 +287,13 @@ function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): str
   const refreshButton = active
     ? '<button class="secondary" type="submit" disabled>Päivitetään…</button>'
     : '<button class="secondary" type="submit">Päivitä viestit</button>';
+  const hasUnanalyzed = groupMessages(load.messages).some((message) => !analyzer.cached(message));
+  const analyzeDisabled = active || !hasUnanalyzed;
+  const analyzeLabel = hasUnanalyzed
+    ? config.analysisMode === "manual" ? "Jonota kaikki ja synkkaa kalenteri" : "Analysoi kaikki ja synkkaa kalenteri"
+    : "Kaikki viestit analysoitu";
   const analyzeButton = load.messages.length
-    ? `<form method="post" action="/messages/analyze"><button type="submit"${active ? " disabled" : ""}>${config.analysisMode === "manual" ? "Jonota kaikki ja synkkaa kalenteri" : "Analysoi kaikki ja synkkaa kalenteri"}</button></form>`
+    ? `<form method="post" action="/messages/analyze"><button type="submit"${analyzeDisabled ? " disabled" : ""}>${analyzeLabel}</button></form>`
     : "";
   const cards = messageCards(load.messages) || '<p class="muted">Ei viestejä.</p>';
   return layout("Viimeiset 30 päivää", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viimeiset 30 päivää</h1>
@@ -409,7 +414,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return send(res, 200, messageLoadingPage(messageLoad.snapshot()));
     }
     if (req.method === "POST" && url.pathname === "/messages/analyze") {
-      if (!calendar.isConnected()) return redirect(res, "/oauth/google/start?returnTo=%2Fmessages");
       const homework = homeworkRefresh.snapshot();
       if (homework.state === "running" || homework.state === "mfa") {
         return send(res, 409, busyPage("Kotitehtävien päivitys on vielä käynnissä. Yritä analysointia sen valmistuttua."));
@@ -419,7 +423,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         return send(res, 409, messageLoadingPage(load));
       }
       if (!load.messages.length) return send(res, 409, messageLoadingPage(load));
-      if (!analyzeSync.start(groupMessages(load.messages))) {
+      const messages = groupMessages(load.messages);
+      if (messages.every((message) => Boolean(analyzer.cached(message)))) return redirect(res, "/messages");
+      if (!calendar.isConnected()) return redirect(res, "/oauth/google/start?returnTo=%2Fmessages");
+      if (!analyzeSync.start(messages)) {
         return send(res, 409, busyPage("Analysointi tai kalenterin synkronointi on jo käynnissä."));
       }
       return redirect(res, "/messages");

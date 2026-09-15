@@ -23,17 +23,17 @@ test("homework cache survives store recreation and is isolated by configuration 
       teacher: "Teacher",
       teacherCode: "TEA",
     }], updatedAt);
-    first.putPedanet({
+    first.putPedanet([{
       date: "2026-09-15",
       heading: "ti 15.9.",
       content: "Task",
       sourceUrl: "https://example.test/homework",
       personalizationStatus: "unresolved",
-    }, updatedAt);
+    }], updatedAt);
 
     const restarted = new HomeworkCacheStore(dir, identities);
     assert.equal(restarted.getWilma()?.value[0]?.homework, "Page 12");
-    assert.equal(restarted.getPedanet()?.value.content, "Task");
+    assert.equal(restarted.getPedanet()?.value[0]?.content, "Task");
     assert.equal(restarted.getWilma()?.updatedAt, updatedAt);
     assert.equal(statSync(join(dir, "family-wilma.sqlite")).mode & 0o777, 0o600);
 

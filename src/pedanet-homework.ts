@@ -25,7 +25,7 @@ export class PedanetHomeworkService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async latest(): Promise<PedanetHomework> {
+  async recent(): Promise<PedanetHomework[]> {
     const response = await this.fetchImpl(this.sourceUrl, {
       headers: {
         accept: "text/html",
@@ -37,12 +37,12 @@ export class PedanetHomeworkService {
     if (!response.ok) throw new Error("Peda.net homework request failed");
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     if (!contentType.includes("text/html")) throw new Error("Peda.net homework response was not HTML");
-    const parsed = parseLatestPedanetHomework(await response.text(), this.expectedModuleId, this.now());
-    return { ...parsed, sourceUrl: this.sourceUrl, personalizationStatus: "unresolved" };
+    const parsed = parseRecentPedanetHomework(await response.text(), this.expectedModuleId, this.now());
+    return parsed.map((block) => ({ ...block, sourceUrl: this.sourceUrl, personalizationStatus: "unresolved" }));
   }
 }
 
-export function parseLatestPedanetHomework(html: string, expectedModuleId: string, now = new Date()): DatedBlock {
+export function parseRecentPedanetHomework(html: string, expectedModuleId: string, now = new Date()): DatedBlock[] {
   const $ = load(html);
   const article = $("article.textmodule.document[data-draft-type='published']")
     .filter((_index, element) => $(element).find("h1").first().text().trim().toLocaleUpperCase("fi") === "LÄKSYT")
@@ -85,10 +85,12 @@ export function parseLatestPedanetHomework(html: string, expectedModuleId: strin
   }
   if (current) blocks.push(finishBlock(current));
   const today = helsinkiDate(now);
-  const latest = blocks.filter((block) => block.date <= today).sort((left, right) => right.date.localeCompare(left.date))[0];
-  if (!latest) throw new Error("Peda.net homework had no current dated block");
-  if (!latest.content) throw new Error("Peda.net homework current dated block was empty");
-  return latest;
+  const oldest = shiftDate(today, -7);
+  const recent = blocks
+    .filter((block) => block.date >= oldest && block.date <= today && block.content)
+    .sort((left, right) => right.date.localeCompare(left.date));
+  if (!recent.length) throw new Error("Peda.net homework had no recent dated block");
+  return recent;
 }
 
 function finishBlock(block: { heading: string; date: string; lines: string[] }): DatedBlock {
@@ -112,4 +114,10 @@ function helsinkiDate(now: Date): string {
     month: "2-digit",
     day: "2-digit",
   }).format(now);
+}
+
+function shiftDate(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }

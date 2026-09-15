@@ -6,12 +6,12 @@ export const HOMEWORK_VIEW_CSS = ".homework-card{overflow-wrap:anywhere}.homewor
 export function renderHomeworkContent(options: {
   homework: FetchedHomework[];
   wilmaError?: boolean;
-  pedanet: PedanetHomework | null;
+  pedanet: PedanetHomework[];
   pedanetError?: boolean;
   pedanetSourceUrl: string | null;
 }): string {
-  const peda = options.pedanet
-    ? `<article class="card homework-card source-card"><div><span class="pill">Einari · Peda.net</span></div><h2>${escapeHtml(options.pedanet.heading)}</h2><div class="homework-body">${escapeHtml(options.pedanet.content)}</div><p class="muted homework-meta">Luokan sivulla voi olla vaihtoehtoisia tehtäviä eri ryhmille. <a class="toplink" href="${escapeHtml(options.pedanet.sourceUrl)}" rel="noopener noreferrer">Avaa lähde</a></p></article>`
+  const peda = options.pedanet.length
+    ? options.pedanet.map((item, index) => `<article class="card homework-card source-card"><div><span class="pill">Einari · Peda.net</span></div><h2>${escapeHtml(item.heading)}</h2><div class="homework-body">${escapeHtml(item.content)}</div>${index === 0 ? `<p class="muted homework-meta">Luokan sivulla voi olla vaihtoehtoisia tehtäviä eri ryhmille. <a class="toplink" href="${escapeHtml(item.sourceUrl)}" rel="noopener noreferrer">Avaa lähde</a></p>` : ""}</article>`).join("")
     : `<article class="card homework-card source-card"><strong>Einari · Peda.net</strong><p class="muted">${options.pedanetError ? "Peda.net-kotitehtäviä ei voitu ladata." : "Peda.net-kotitehtäviä ei ole määritetty."}${options.pedanetSourceUrl ? ` <a class="toplink" href="${escapeHtml(options.pedanetSourceUrl)}" rel="noopener noreferrer">Avaa lähde</a>` : ""}</p></article>`;
   const wilmaStatus = options.wilmaError
     ? '<div class="error">Wilman kotitehtäviä ei voitu ladata.</div>'

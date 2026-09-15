@@ -8,8 +8,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { analysisIdentity } from "./analysis.js";
 import { wilmaCacheIdentity } from "./homework-cache.js";
 import { MessageCacheStore } from "./message-cache.js";
+import { groupMessages } from "./message-group.js";
+import { AnalysisStore } from "./store.js";
 
 async function availablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -26,17 +29,18 @@ async function availablePort(): Promise<number> {
 test("health stays public while application pages require Google sign-in", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "family-wilma-http-"));
   const port = await availablePort();
+  const cachedMessage = {
+    accountId: "school",
+    studentNumber: "1",
+    child: "Test child",
+    messageId: 42,
+    subject: "Cached message",
+    sender: "Teacher",
+    sentAt: new Date(),
+    content: "Visible without waiting for Wilma.",
+  };
   new MessageCacheStore(dataDir, wilmaCacheIdentity([])).put({
-    messages: [{
-      accountId: "school",
-      studentNumber: "1",
-      child: "Test child",
-      messageId: 42,
-      subject: "Cached message",
-      sender: "Teacher",
-      sentAt: new Date(),
-      content: "Visible without waiting for Wilma.",
-    }],
+    messages: [cachedMessage],
     structuredCalendarItems: [],
   }, new Date().toISOString());
   const child = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "index.js")], {
@@ -161,6 +165,22 @@ test("health stays public while application pages require Google sign-in", async
     assert.match(messagesHtml, /action="\/messages\/refresh"/);
     assert.match(messagesHtml, /Analysoi kaikki ja synkkaa kalenteri/);
     assert.doesNotMatch(messagesHtml, /type="checkbox"/);
+
+    const groupedMessage = groupMessages([cachedMessage])[0];
+    assert.ok(groupedMessage);
+    new AnalysisStore(dataDir).put(analysisIdentity(groupedMessage), { calendarItems: [], hasOtherContent: false });
+    const analyzedMessages = await fetch(`http://127.0.0.1:${port}/messages`, {
+      headers: { cookie: `family_wilma_session=${token}` },
+    });
+    assert.equal(analyzedMessages.status, 200);
+    assert.match(await analyzedMessages.text(), /<button type="submit" disabled>Kaikki viestit analysoitu<\/button>/);
+    const redundantAnalysis = await fetch(`http://127.0.0.1:${port}/messages/analyze`, {
+      method: "POST",
+      headers: { cookie: `family_wilma_session=${token}` },
+      redirect: "manual",
+    });
+    assert.equal(redundantAnalysis.status, 303);
+    assert.equal(redundantAnalysis.headers.get("location"), "/messages");
 
     const logout = await fetch(`http://127.0.0.1:${port}/logout`, {
       method: "POST",
