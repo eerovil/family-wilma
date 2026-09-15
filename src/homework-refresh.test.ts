@@ -152,3 +152,67 @@ test("homework refresh stays queued server-side and refreshes Peda while waiting
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("automatic homework refresh skips fresh sources and refreshes stale sources independently", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "family-wilma-homework-freshness-"));
+  try {
+    const store = cache(dir);
+    store.putWilma([item("Stored")], "2026-09-15T12:14:59.000Z");
+    store.putPedanet({
+      date: "2026-09-15", heading: "ti 15.9.", content: "Stored Peda",
+      sourceUrl: "https://example.test/homework", personalizationStatus: "unresolved",
+    }, "2026-09-15T12:00:00.000Z");
+    let wilmaCalls = 0;
+    let pedanetCalls = 0;
+    const job = new HomeworkRefreshJob({
+      cache: store,
+      fetchWilma: async () => { wilmaCalls += 1; return [item("Fresh")]; },
+      fetchPedanet: async () => {
+        pedanetCalls += 1;
+        return {
+          date: "2026-09-15", heading: "ti 15.9.", content: "Fresh Peda",
+          sourceUrl: "https://example.test/homework", personalizationStatus: "unresolved",
+        };
+      },
+      now: () => new Date("2026-09-15T12:15:00.000Z"),
+    });
+
+    assert.equal(job.needsRefresh(), true);
+    assert.ok(job.start({ force: false }));
+    await job.wait();
+    assert.equal(wilmaCalls, 0);
+    assert.equal(pedanetCalls, 1);
+
+    assert.ok(job.start({ force: true }));
+    await job.wait();
+    assert.equal(wilmaCalls, 1);
+    assert.equal(pedanetCalls, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("automatic homework refresh is a no-op while every configured source is fresh", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "family-wilma-homework-fresh-"));
+  try {
+    const store = cache(dir);
+    store.putWilma([item("Stored")], "2026-09-15T12:14:59.000Z");
+    store.putPedanet({
+      date: "2026-09-15", heading: "ti 15.9.", content: "Stored Peda",
+      sourceUrl: "https://example.test/homework", personalizationStatus: "unresolved",
+    }, "2026-09-15T12:14:59.000Z");
+    let calls = 0;
+    const job = new HomeworkRefreshJob({
+      cache: store,
+      fetchWilma: async () => { calls += 1; return []; },
+      fetchPedanet: async () => { calls += 1; throw new Error("not called"); },
+      now: () => new Date("2026-09-15T12:15:00.000Z"),
+    });
+
+    assert.equal(job.needsRefresh(), false);
+    assert.equal(job.start({ force: false }), null);
+    assert.equal(calls, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

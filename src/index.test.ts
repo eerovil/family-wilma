@@ -8,6 +8,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { wilmaCacheIdentity } from "./homework-cache.js";
+import { MessageCacheStore } from "./message-cache.js";
 
 async function availablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -24,6 +26,19 @@ async function availablePort(): Promise<number> {
 test("health stays public while application pages require Google sign-in", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "family-wilma-http-"));
   const port = await availablePort();
+  new MessageCacheStore(dataDir, wilmaCacheIdentity([])).put({
+    messages: [{
+      accountId: "school",
+      studentNumber: "1",
+      child: "Test child",
+      messageId: 42,
+      subject: "Cached message",
+      sender: "Teacher",
+      sentAt: new Date(),
+      content: "Visible without waiting for Wilma.",
+    }],
+    structuredCalendarItems: [],
+  }, new Date().toISOString());
   const child = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "index.js")], {
     env: {
       ...process.env,
@@ -73,11 +88,12 @@ test("health stays public while application pages require Google sign-in", async
     for (const [method, path] of [
       ["GET", "/"],
       ["GET", "/homework"],
+      ["GET", "/messages"],
       ["GET", "/setup"],
       ["GET", "/setup/discover?account=school"],
-      ["POST", "/messages"],
+      ["POST", "/homework/refresh"],
+      ["POST", "/messages/refresh"],
       ["POST", "/messages/analyze"],
-      ["POST", "/calendar/sync"],
       ["POST", "/mfa"],
       ["POST", "/logout"],
     ] as const) {
@@ -119,6 +135,8 @@ test("health stays public while application pages require Google sign-in", async
     assert.equal(signedInHome.status, 200);
     const signedInHomeHtml = await signedInHome.text();
     assert.match(signedInHomeHtml, /href="\/homework">Kotitehtävät/);
+    assert.match(signedInHomeHtml, /href="\/messages">Näytä viimeiset 30 päivää/);
+    assert.doesNotMatch(signedInHomeHtml, /calendar\/sync/);
     assert.match(signedInHomeHtml, /rel="manifest" href="\/manifest\.webmanifest"/);
     assert.match(signedInHomeHtml, /<script defer src="\/pwa\.js"><\/script>/);
 
@@ -128,23 +146,21 @@ test("health stays public while application pages require Google sign-in", async
     });
     assert.equal(homework.status, 200);
     assert.ok(Date.now() - homeworkStartedAt < 1_000, "homework page must not wait for refresh");
-    assert.match(await homework.text(), /Kotitehtävät/);
-
-    const startedAt = Date.now();
-    const startMessages = await fetch(`http://127.0.0.1:${port}/messages`, {
-      method: "POST",
-      headers: { cookie: `family_wilma_session=${token}` },
-      redirect: "manual",
-    });
-    assert.equal(startMessages.status, 303);
-    assert.equal(startMessages.headers.get("location"), "/messages");
-    assert.ok(Date.now() - startedAt < 1_000, "message loading POST must not wait for the job");
+    const homeworkHtml = await homework.text();
+    assert.match(homeworkHtml, /Kotitehtävät/);
+    assert.match(homeworkHtml, /action="\/homework\/refresh"/);
+    assert.match(homeworkHtml, /Päivitä nyt|Päivitetään…/);
 
     const messages = await fetch(`http://127.0.0.1:${port}/messages`, {
       headers: { cookie: `family_wilma_session=${token}` },
     });
     assert.equal(messages.status, 200);
-    assert.match(await messages.text(), /30 päivää/);
+    const messagesHtml = await messages.text();
+    assert.match(messagesHtml, /30 päivää/);
+    assert.match(messagesHtml, /Cached message/);
+    assert.match(messagesHtml, /action="\/messages\/refresh"/);
+    assert.match(messagesHtml, /Analysoi kaikki ja synkkaa kalenteri/);
+    assert.doesNotMatch(messagesHtml, /type="checkbox"/);
 
     const logout = await fetch(`http://127.0.0.1:${port}/logout`, {
       method: "POST",

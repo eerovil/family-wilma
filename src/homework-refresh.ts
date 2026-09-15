@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { cacheIsFresh } from "./cache-freshness.js";
 import type { HomeworkCacheStore } from "./homework-cache.js";
 import type { PedanetHomework } from "./pedanet-homework.js";
 import type { FetchedHomework } from "./wilma.js";
@@ -45,8 +46,21 @@ export class HomeworkRefreshJob {
     };
   }
 
-  start(): string {
-    if (this.current || this.status.state === "mfa") return this.status.runId ?? "pending";
+  needsRefresh(): boolean {
+    const now = this.dependencies.now?.() ?? new Date();
+    return !cacheIsFresh(this.status.wilmaUpdatedAt, now)
+      || Boolean(this.dependencies.fetchPedanet && !cacheIsFresh(this.status.pedanetUpdatedAt, now));
+  }
+
+  start(options: { force?: boolean } = { force: true }): string | null {
+    const force = options.force ?? false;
+    if (this.current) return this.status.runId ?? "pending";
+    if (this.status.state === "mfa") return this.status.runId ?? "pending";
+    const now = this.dependencies.now?.() ?? new Date();
+    const refreshWilma = force || !cacheIsFresh(this.status.wilmaUpdatedAt, now);
+    const refreshPedanet = Boolean(this.dependencies.fetchPedanet)
+      && (force || !cacheIsFresh(this.status.pedanetUpdatedAt, now));
+    if (!refreshWilma && !refreshPedanet) return null;
     const runId = randomUUID();
     this.status = {
       ...this.status,
@@ -56,7 +70,7 @@ export class HomeworkRefreshJob {
       pedanetError: false,
       mfaAccountId: null,
     };
-    this.current = this.run().finally(() => { this.current = null; });
+    this.current = this.run(refreshWilma, refreshPedanet).finally(() => { this.current = null; });
     return runId;
   }
 
@@ -74,8 +88,11 @@ export class HomeworkRefreshJob {
     return true;
   }
 
-  private async run(): Promise<void> {
-    await Promise.all([this.refreshWilma(), this.refreshPedanet()]);
+  private async run(refreshWilma: boolean, refreshPedanet: boolean): Promise<void> {
+    await Promise.all([
+      refreshWilma ? this.refreshWilma() : Promise.resolve(),
+      refreshPedanet ? this.refreshPedanet() : Promise.resolve(),
+    ]);
     this.status = {
       ...this.status,
       state: this.status.mfaAccountId ? "mfa" : this.status.wilmaError || this.status.pedanetError ? "error" : "success",

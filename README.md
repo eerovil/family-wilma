@@ -2,11 +2,10 @@
 
 Family Wilma is a small self-hosted app for one household. It combines messages from several Wilma accounts into one view, uses Claude Sonnet to pull out calendar-worthy information, highlights messages that contain important non-calendar content, and syncs dated items to Google Calendar.
 
-The normal daily-use screen intentionally has three primary actions:
+The normal daily-use screen intentionally has two primary actions:
 
 - **Kotitehtävät**
 - **Näytä viimeiset 30 päivää**
-- **Synkkaa kalenteriin**
 
 **Kotitehtävät** reads each discovered child's Wilma overview and presents one combined
 chronological list, newest first. Nothing is grouped. The card at the top
@@ -15,9 +14,10 @@ If that page contains alternatives for different groups, they are shown verbatim
 guessed. A Peda.net failure affects only that card; Wilma homework remains available.
 
 The latest successful Wilma and Peda.net homework responses are stored in the private SQLite
-database. Opening the view renders that snapshot immediately and always starts one coalesced
-background refresh. The page updates when the refresh finishes; a failed refresh keeps the last
-successful snapshot visible with its saved timestamp. Changing the configured Wilma household
+database. Opening the view renders that snapshot immediately and starts one coalesced background
+refresh only when a source is at least 15 minutes old. **Päivitä nyt** bypasses that freshness
+window. The page updates when the refresh finishes; a failed refresh keeps the last successful
+snapshot visible with its saved timestamp. Changing the configured Wilma household
 or Peda.net source invalidates the corresponding snapshot.
 
 Family Wilma is installable as a PWA. Its service worker uses the network first and stores
@@ -25,14 +25,11 @@ successful application pages on that browser for offline access. OAuth routes an
 never cached. Because cached pages can contain family data, install it only on a trusted device
 and remove the site's stored data when that device changes hands.
 
-Recent messages load through one in-process background job so a large inbox cannot hold the
-browser request open. Opening the message list only reads Wilma: it never starts AI analysis.
-Repeated clicks reuse the running fetch instead of starting duplicate Wilma requests.
-
-Messages older than 30 days are not downloaded during normal use. After the recent view is
-ready, **Hae myös vanhemmat viestit** explicitly starts a background fetch of the whole inbox,
-still without analysis. There is no multi-household tenancy, Redis, external worker, or permanent
-Wilma-content archive.
+The latest successful 30-day message snapshot is stored in the private SQLite database and shown
+immediately after restarts. Opening the message list refreshes it in the background only when it
+is at least 15 minutes old; **Päivitä viestit** bypasses that window. Message loading never starts
+AI analysis, and repeated requests reuse the running fetch. Messages older than 30 days are not
+downloaded by this view. There is no multi-household tenancy, Redis, or external worker.
 
 ## Requirements
 
@@ -92,11 +89,12 @@ If Wilma asks for MFA, the request pauses with an MFA form. The submitted one-ti
 
 Set `ANTHROPIC_API_KEY`. The Sonnet model is intentionally a code constant in `src/analysis.ts`, not an environment override.
 
-Analysis is always explicit. Select one or more fetched messages and press **Analysoi valitut
-batchina**. Family Wilma submits the selection through Anthropic's Message Batches API, whose
+Analysis is always explicit. Press **Analysoi kaikki ja synkkaa kalenteri** on the message view.
+Family Wilma submits every currently displayed, uncached 30-day message through Anthropic's Message Batches API, whose
 requests are priced at 50% of the normal API rates. A batch runs asynchronously and can take up
-to 24 hours; its persisted status is refreshed when the message page is opened. Opening the page,
-fetching older messages, and calendar sync never submit analysis requests.
+to 24 hours; its persisted status is refreshed when the message page is opened. Calendar sync
+starts only after those message analyses have reached a terminal state. Opening or refreshing the
+page never submits analysis requests.
 
 Each result is cached in SQLite by account + student + message id + SHA-256 of relevant message
 content + analyzer version. An unchanged or already-pending message is therefore not submitted
@@ -104,9 +102,9 @@ again. Batch bookkeeping stores these identities and provider request ids, but n
 bodies.
 
 For agent-operated local development, set `ANALYSIS_MODE=manual` and leave
-`ANTHROPIC_API_KEY` empty. The same selection button then writes a private request under
+`ANTHROPIC_API_KEY` empty. The same all-message button then writes a private request under
 `DATA_DIR/manual-analysis` instead of contacting Anthropic. Request files are mode 0600 and
-contain only explicitly selected messages. An operator or coding agent can process them with:
+contain the displayed 30-day messages that still need analysis. An operator or coding agent can process them with:
 
 ```sh
 npm run manual-analysis -- pending
@@ -201,11 +199,12 @@ reverse proxy in front for remote access. Application pages require the Google a
 
 The named volume stores only:
 
-- `family-wilma.sqlite` — Sonnet analysis cache and batch status/mapping metadata
+- `family-wilma.sqlite` — latest message/homework snapshots, Sonnet analysis cache, and batch status/mapping metadata
 - `google-oauth-token.json` — Google OAuth token, mode 0600
 - `google-calendar-map.json` — ids of the secondary calendars created by Family Wilma, mode 0600
 
-Wilma message bodies, grades, attendance, etc. are not archived locally.
+Only one replaceable 30-day message snapshot is retained; grades, attendance, and historical
+message archives are not stored locally.
 
 ## Calendar inputs
 

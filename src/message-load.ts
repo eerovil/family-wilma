@@ -1,3 +1,5 @@
+import { cacheIsFresh } from "./cache-freshness.js";
+import type { MessageCacheStore } from "./message-cache.js";
 import type { FetchedMessage, WilmaBundle } from "./wilma.js";
 
 const RECENT_DAYS = 30;
@@ -5,16 +7,16 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 
 export interface MessageLoadSnapshot {
   state: "idle" | "fetching" | "mfa" | "ready" | "error";
-  includeOlder: boolean;
   messages: FetchedMessage[];
   structuredCalendarItems: WilmaBundle["structuredCalendarItems"];
+  updatedAt: string | null;
   error: string | null;
   mfaAccountId: string | null;
-  queuedIncludeOlder: boolean;
 }
 
 interface MessageLoadDependencies {
-  fetch(options: { sentAfter?: Date }): Promise<WilmaBundle>;
+  cache: MessageCacheStore;
+  fetch(options: { sentAfter: Date }): Promise<WilmaBundle>;
   mfaAccountId?(error: unknown): string | null;
   reportError?(error: unknown): void;
   now?: () => Date;
@@ -22,39 +24,30 @@ interface MessageLoadDependencies {
 
 export class MessageLoadJob {
   private current: Promise<void> | null = null;
-  private status: MessageLoadSnapshot = {
-    state: "idle",
-    includeOlder: false,
-    messages: [],
-    structuredCalendarItems: [],
-    error: null,
-    mfaAccountId: null,
-    queuedIncludeOlder: false,
-  };
+  private status: MessageLoadSnapshot;
 
-  constructor(private readonly dependencies: MessageLoadDependencies) {}
-
-  start(options: { includeOlder: boolean }): void {
-    if (this.current) {
-      if (options.includeOlder && !this.status.includeOlder) {
-        this.status.queuedIncludeOlder = true;
-      }
-      return;
-    }
+  constructor(private readonly dependencies: MessageLoadDependencies) {
+    const cached = dependencies.cache.get();
     this.status = {
-      state: "fetching",
-      includeOlder: options.includeOlder,
-      messages: [],
-      structuredCalendarItems: [],
+      state: cached ? "ready" : "idle",
+      messages: cached?.messages ?? [],
+      structuredCalendarItems: cached?.structuredCalendarItems ?? [],
+      updatedAt: cached?.updatedAt ?? null,
       error: null,
       mfaAccountId: null,
-      queuedIncludeOlder: false,
     };
-    this.current = this.run(options).finally(() => {
-      const startOlder = this.status.queuedIncludeOlder && !options.includeOlder;
-      this.current = null;
-      if (startOlder) this.start({ includeOlder: true });
-    });
+  }
+
+  needsRefresh(): boolean {
+    return !cacheIsFresh(this.status.updatedAt, this.now());
+  }
+
+  start(options: { force?: boolean } = {}): boolean {
+    if (this.current || this.status.state === "mfa") return false;
+    if (!options.force && !this.needsRefresh()) return false;
+    this.status = { ...this.status, state: "fetching", error: null, mfaAccountId: null };
+    this.current = this.run().finally(() => { this.current = null; });
+    return true;
   }
 
   snapshot(): MessageLoadSnapshot {
@@ -71,22 +64,22 @@ export class MessageLoadJob {
 
   claimMfa(accountId: string): boolean {
     if (this.current || this.status.state !== "mfa" || this.status.mfaAccountId !== accountId) return false;
-    this.status = { ...this.status, state: "idle", mfaAccountId: null };
+    this.status = { ...this.status, state: this.status.updatedAt ? "ready" : "idle", mfaAccountId: null };
     return true;
   }
 
-  private async run(options: { includeOlder: boolean }): Promise<void> {
+  private async run(): Promise<void> {
     try {
-      const now = this.dependencies.now?.() ?? new Date();
-      const fetchOptions = options.includeOlder
-        ? {}
-        : { sentAfter: new Date(now.getTime() - RECENT_DAYS * DAY_MS) };
-      const bundle = await this.dependencies.fetch(fetchOptions);
+      const now = this.now();
+      const bundle = await this.dependencies.fetch({ sentAfter: new Date(now.getTime() - RECENT_DAYS * DAY_MS) });
+      const updatedAt = this.now().toISOString();
+      this.dependencies.cache.put(bundle, updatedAt);
       this.status = {
         ...this.status,
         state: "ready",
         messages: bundle.messages,
         structuredCalendarItems: bundle.structuredCalendarItems,
+        updatedAt,
       };
     } catch (error) {
       const mfaAccountId = this.dependencies.mfaAccountId?.(error) ?? null;
@@ -96,7 +89,11 @@ export class MessageLoadJob {
       }
       if (this.dependencies.reportError) this.dependencies.reportError(error);
       else console.error(`message loading failed: ${error instanceof Error ? error.name : "Error"}`);
-      this.status = { ...this.status, state: "error", error: "Viestien lataaminen epäonnistui." };
+      this.status = { ...this.status, state: "error", error: "Viestien päivittäminen epäonnistui." };
     }
+  }
+
+  private now(): Date {
+    return this.dependencies.now?.() ?? new Date();
   }
 }

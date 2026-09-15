@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { URL } from "node:url";
 import { loadConfig } from "./config.js";
 import { analysisIdentity, MessageAnalyzer } from "./analysis.js";
+import { AnalyzeSyncJob, type AnalyzeSyncSnapshot } from "./analyze-sync.js";
 import { AnalysisBatchService, type AnalysisBatchAdapter } from "./batch-analysis.js";
 import { ManualAnalysisAdapter } from "./manual-analysis.js";
 import { GoogleCalendarService } from "./google.js";
@@ -12,12 +13,12 @@ import { MESSAGE_CARD_CSS, renderMessageCard } from "./message-view.js";
 import { AnalysisStore, type CalendarItem } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
-import { CalendarSyncJob, type CalendarSyncSnapshot } from "./calendar-sync.js";
 import { configureErrorReportingSecrets, flushErrorReporting, initializeErrorReporting, reportError } from "./telemetry.js";
 import { PedanetHomeworkService } from "./pedanet-homework.js";
 import { HOMEWORK_VIEW_CSS, renderHomeworkContent } from "./homework-view.js";
-import { HomeworkCacheStore, homeworkCacheIdentity, wilmaHomeworkCacheIdentity } from "./homework-cache.js";
+import { HomeworkCacheStore, homeworkCacheIdentity, wilmaCacheIdentity } from "./homework-cache.js";
 import { HomeworkRefreshJob, type HomeworkRefreshSnapshot } from "./homework-refresh.js";
+import { MessageCacheStore } from "./message-cache.js";
 import { THEME_COLOR } from "./pwa-content.js";
 import { pwaAsset } from "./pwa.js";
 
@@ -55,7 +56,7 @@ const pedanetHomework = config.pedanetHomeworkUrl && config.pedanetHomeworkModul
   ? new PedanetHomeworkService(config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId)
   : null;
 const homeworkCache = new HomeworkCacheStore(config.dataDir, {
-  wilma: wilmaHomeworkCacheIdentity(config.wilmaAccounts),
+  wilma: wilmaCacheIdentity(config.wilmaAccounts),
   pedanet: pedanetHomework
     ? homeworkCacheIdentity([config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId])
     : null,
@@ -75,14 +76,19 @@ const homeworkRefresh = new HomeworkRefreshJob({
 const calendar = new GoogleCalendarService(config);
 const sessions = new SessionStore(config.dataDir);
 const secureCookies = config.baseUrl.startsWith("https://");
+const messageCache = new MessageCacheStore(config.dataDir, wilmaCacheIdentity(config.wilmaAccounts));
 const messageLoad = new MessageLoadJob({
+  cache: messageCache,
   fetch: (options) => wilma.fetchAll(options),
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error) => reportError(error, { operation: "message.load" }),
 });
-const calendarSync = new CalendarSyncJob({
+const analyzeSync = new AnalyzeSyncJob({
+  submit: (messages) => batches.submit(messages),
+  refresh: () => batches.refresh(),
+  pending: (message) => store.hasPending(analysisIdentity(message)),
+  statuses: () => batches.statuses(),
   sync: async () => {
-    await batches.refresh().catch((error) => reportError(error, { operation: "analysis.batch.refresh" }));
     const bundle = await wilma.fetchAll({
       sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000),
       includeLessons: true,
@@ -95,7 +101,7 @@ const calendarSync = new CalendarSyncJob({
     });
   },
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
-  reportError: (error) => reportError(error, { operation: "calendar.sync" }),
+  reportError: (error) => reportError(error, { operation: "analysis_and_calendar.sync" }),
 });
 
 interface AnalyzedMessage {
@@ -119,28 +125,21 @@ function layout(title: string, body: string, head = ""): string {
 }
 
 function home(): string {
-  const sync = calendarSync.snapshot();
-  if (sync.state === "mfa" && sync.mfaAccountId) return mfaPage(sync.mfaAccountId, "/calendar/sync", "POST");
   const google = calendar.isConnected()
     ? '<span class="muted">Google Calendar yhdistetty</span>'
     : '<a class="toplink" href="/oauth/google/start">Yhdistä Google Calendar</a>';
-  const syncStatus = calendarSyncStatus(sync);
-  const syncButton = sync.state === "running"
-    ? '<button type="submit" disabled>Synkronointi käynnissä…</button>'
-    : '<button type="submit">Synkkaa kalenteriin</button>';
   return layout("Family Wilma", `
 <h1>Family Wilma</h1>
 <div class="actions">
   <a class="button" href="/homework">Kotitehtävät</a>
-  <form method="post" action="/messages"><button type="submit">Näytä viimeiset 30 päivää</button></form>
-  <form method="post" action="/calendar/sync">${syncButton}</form>
+  <a class="button" href="/messages">Näytä viimeiset 30 päivää</a>
 </div>
-${syncStatus.html}<p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`, syncStatus.refresh ? '<meta http-equiv="refresh" content="3">' : "");
+<p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`);
 }
 
 function homeworkPage(snapshot: HomeworkRefreshSnapshot): string {
   if (snapshot.state === "mfa" && snapshot.mfaAccountId) {
-    return mfaPage(snapshot.mfaAccountId, "/homework", "GET");
+    return mfaPage(snapshot.mfaAccountId, "/homework/refresh", "POST");
   }
   const hasCache = Boolean(snapshot.wilmaUpdatedAt || snapshot.pedanetUpdatedAt);
   const content = hasCache || snapshot.state !== "running"
@@ -153,9 +152,12 @@ function homeworkPage(snapshot: HomeworkRefreshSnapshot): string {
     })
     : "";
   const refresh = homeworkRefreshStatus(snapshot);
+  const refreshButton = snapshot.state === "running"
+    ? '<button type="submit" disabled>Päivitetään…</button>'
+    : '<button class="secondary" type="submit">Päivitä nyt</button>';
   return layout(
     "Kotitehtävät",
-    `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1>${refresh.html}${content}`,
+    `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1><form method="post" action="/homework/refresh">${refreshButton}</form>${refresh.html}${content}`,
     refresh.pollUrl ? `<meta http-equiv="refresh" content="3;url=${escapeHtml(refresh.pollUrl)}">` : "",
   );
 }
@@ -199,8 +201,14 @@ function formatTimestamp(value: string): string {
     : new Intl.DateTimeFormat("fi-FI", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Helsinki" }).format(date);
 }
 
-function calendarSyncStatus(snapshot: CalendarSyncSnapshot): { html: string; refresh: boolean } {
-  if (snapshot.state === "running") {
+function analyzeSyncStatus(snapshot: AnalyzeSyncSnapshot): { html: string; refresh: boolean } {
+  if (snapshot.state === "analyzing") {
+    return {
+      html: '<div class="card"><strong>Viestejä analysoidaan…</strong><p class="muted">Kaikki viimeisten 30 päivän viestit käsitellään ennen kalenterin synkronointia. Sivun voi sulkea.</p></div>',
+      refresh: true,
+    };
+  }
+  if (snapshot.state === "syncing") {
     return {
       html: '<div class="card"><strong>Kalenteria synkronoidaan…</strong><p class="muted">Sivun voi sulkea. Työ jatkuu palvelimella.</p></div>',
       refresh: true,
@@ -214,7 +222,7 @@ function calendarSyncStatus(snapshot: CalendarSyncSnapshot): { html: string; ref
     };
   }
   if (snapshot.state === "error") {
-    return { html: `<div class="error">${escapeHtml(snapshot.error ?? "Kalenterin synkronointi epäonnistui.")}</div>`, refresh: false };
+    return { html: `<div class="error">${escapeHtml(snapshot.error ?? "Analysointi tai kalenterin synkronointi epäonnistui.")}</div>`, refresh: false };
   }
   return { html: "", refresh: false };
 }
@@ -227,27 +235,18 @@ function cachedMessages(messages: FetchedMessage[]): AnalyzedMessage[] {
 }
 
 function messageLoadingPage(snapshot: MessageLoadSnapshot): string {
-  if (snapshot.state === "idle") return layout("Viestit", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit</h1><p class="muted">Viestien latausta ei ole aloitettu.</p>`);
   if (snapshot.state === "mfa" && snapshot.mfaAccountId) {
-    const returnTo = snapshot.includeOlder ? "/messages?scope=all" : "/messages";
-    return mfaPage(snapshot.mfaAccountId, returnTo, "POST");
+    return mfaPage(snapshot.mfaAccountId, "/messages/refresh", "POST");
   }
-  if (snapshot.state === "error") return layout("Viestit", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit</h1><div class="error">${escapeHtml(snapshot.error ?? "Viestien lataaminen epäonnistui.")}</div>`);
-  if (snapshot.state === "ready") {
-    const scope = snapshot.includeOlder ? "Kaikki viestit" : "Viimeiset 30 päivää";
-    const older = snapshot.includeOlder ? "" : `<form method="post" action="/messages?scope=all"><button class="secondary" type="submit">Hae myös vanhemmat viestit</button></form>`;
-    return messagesPage(snapshot.messages, scope, older);
+  const sync = analyzeSync.snapshot();
+  if (sync.state === "mfa" && sync.mfaAccountId) {
+    return mfaPage(sync.mfaAccountId, "/messages/analyze", "POST");
   }
-  const queued = snapshot.queuedIncludeOlder ? '<p class="muted">Vanhemmat viestit haetaan tämän jälkeen.</p>' : "";
-  return layout("Viestit latautuvat", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit latautuvat</h1><div class="card"><strong>Haetaan viestejä Wilmasta…</strong><p class="muted">Sivun voi sulkea. Työ jatkuu palvelimella, eikä uusi painallus käynnistä toista työtä.</p>${queued}</div>`, '<meta http-equiv="refresh" content="3">');
+  return messagesPage(snapshot, sync);
 }
 
 function busyPage(message: string): string {
   return layout("Toiminto käynnissä", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Toiminto käynnissä</h1><div class="card">${escapeHtml(message)}</div>`);
-}
-
-function selectionId(message: FetchedMessage): string {
-  return Buffer.from(JSON.stringify([message.accountId, message.studentNumber, message.messageId])).toString("base64url");
 }
 
 function messageCards(messages: FetchedMessage[]): string {
@@ -255,12 +254,7 @@ function messageCards(messages: FetchedMessage[]): string {
     message,
     analysis: analyzer.cached(message),
     pending: store.hasPending(analysisIdentity(message)),
-    selectionId: selectionId(message),
   })).join("");
-}
-
-function hasSelectableMessages(messages: FetchedMessage[]): boolean {
-  return messages.some((message) => !analyzer.cached(message) && !store.hasPending(analysisIdentity(message)));
 }
 
 function batchStatus(): { html: string; active: boolean } {
@@ -282,14 +276,26 @@ function batchStatus(): { html: string; active: boolean } {
   return { html, active };
 }
 
-function messagesPage(messages: FetchedMessage[], title = "Kaikki viestit", after = ""): string {
-  const status = batchStatus();
-  const cards = messageCards(messages);
-  const submit = hasSelectableMessages(messages)
-    ? `<div class="analyze-bar"><button type="submit">${config.analysisMode === "manual" ? "Jonota valitut agentille" : "Analysoi valitut batchina"}</button></div>`
+function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): string {
+  const batchesState = batchStatus();
+  const syncState = analyzeSyncStatus(sync);
+  const active = load.state === "fetching" || syncState.refresh;
+  const saved = load.updatedAt ? `<p class="muted">Tallennettu ${escapeHtml(formatTimestamp(load.updatedAt))}</p>` : "";
+  const loadStatus = load.state === "fetching"
+    ? `<div class="card"><strong>Viestejä päivitetään…</strong>${saved}<p class="muted">Näytetään tallennetut viestit. Päivitys jatkuu taustalla.</p></div>`
+    : load.state === "error"
+      ? `<div class="error">${escapeHtml(load.error ?? "Viestien päivittäminen epäonnistui.")}</div>${saved}`
+      : saved;
+  const refreshButton = active
+    ? '<button class="secondary" type="submit" disabled>Päivitetään…</button>'
+    : '<button class="secondary" type="submit">Päivitä viestit</button>';
+  const analyzeButton = load.messages.length
+    ? `<form method="post" action="/messages/analyze"><button type="submit"${active ? " disabled" : ""}>${config.analysisMode === "manual" ? "Jonota kaikki ja synkkaa kalenteri" : "Analysoi kaikki ja synkkaa kalenteri"}</button></form>`
     : "";
-  const form = cards ? `<form method="post" action="/messages/analyze">${cards}${submit}</form>` : '<p class="muted">Ei viestejä.</p>';
-  return layout(title, `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>${escapeHtml(title)}</h1>${status.html}${form}${after}`, status.active ? '<meta http-equiv="refresh" content="10">' : "");
+  const cards = messageCards(load.messages) || '<p class="muted">Ei viestejä.</p>';
+  return layout("Viimeiset 30 päivää", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viimeiset 30 päivää</h1>
+  <form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}${cards}`,
+  active || batchesState.active ? '<meta http-equiv="refresh" content="5">' : "");
 }
 
 function mfaPage(accountId: string, returnTo: string, returnMethod: "GET" | "POST"): string {
@@ -377,9 +383,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
     if (req.method === "GET" && url.pathname === "/") return send(res, 200, home());
     if (req.method === "GET" && url.pathname === "/homework") {
-      const before = homeworkRefresh.snapshot();
-      if (!url.searchParams.has("run") || before.state === "idle") homeworkRefresh.start();
+      homeworkRefresh.start({ force: false });
       return send(res, 200, homeworkPage(homeworkRefresh.snapshot()));
+    }
+    if (req.method === "POST" && url.pathname === "/homework/refresh") {
+      if (otherWilmaOperationActive()) {
+        return send(res, 409, busyPage("Toinen Wilma-toiminto on vielä käynnissä. Yritä kotitehtävien päivittämistä sen valmistuttua."));
+      }
+      const runId = homeworkRefresh.start({ force: true });
+      return redirect(res, `/homework?run=${encodeURIComponent(runId ?? "pending")}`);
     }
     if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage(config.googleAllowedEmail));
     if (req.method === "POST" && url.pathname === "/logout") {
@@ -387,45 +399,43 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.setHeader("set-cookie", clearSessionCookie(secureCookies));
       return send(res, 200, layout("Kirjauduttu ulos", '<h1>Kirjauduttu ulos</h1><p><a class="toplink" href="/oauth/google/start">Kirjaudu uudelleen Googlella</a></p>'));
     }
-    if (req.method === "POST" && url.pathname === "/messages") {
+    if (req.method === "POST" && url.pathname === "/messages/refresh") {
       const homework = homeworkRefresh.snapshot();
       if (homework.state === "running" || homework.state === "mfa") {
         return send(res, 409, busyPage("Kotitehtävien päivitys on vielä käynnissä. Yritä viestien lataamista sen valmistuttua."));
       }
-      if (calendarSync.snapshot().state === "running") {
-        return send(res, 409, busyPage("Kalenterin synkronointi on vielä käynnissä. Yritä viestien lataamista sen valmistuttua."));
+      const syncState = analyzeSync.snapshot().state;
+      if (syncState === "analyzing" || syncState === "syncing" || syncState === "mfa") {
+        return send(res, 409, busyPage("Analysointi tai kalenterin synkronointi on vielä käynnissä. Yritä viestien päivittämistä sen valmistuttua."));
       }
-      messageLoad.start({ includeOlder: url.searchParams.get("scope") === "all" });
+      messageLoad.start({ force: true });
       return redirect(res, "/messages");
     }
     if (req.method === "GET" && url.pathname === "/messages") {
       void batches.refresh().catch((error) => reportError(error, { operation: "analysis.batch.refresh" }));
+      const homeworkState = homeworkRefresh.snapshot().state;
+      const syncState = analyzeSync.snapshot().state;
+      if (homeworkState !== "running" && homeworkState !== "mfa"
+        && syncState !== "analyzing" && syncState !== "syncing" && syncState !== "mfa") {
+        messageLoad.start({ force: false });
+      }
       return send(res, 200, messageLoadingPage(messageLoad.snapshot()));
     }
     if (req.method === "POST" && url.pathname === "/messages/analyze") {
-      const load = messageLoad.snapshot();
-      if (load.state !== "ready") return send(res, 409, messageLoadingPage(load));
-      const form = await readForm(req);
-      const selected = new Set(form.getAll("message"));
-      const messages = load.messages.filter((message) => selected.has(selectionId(message)));
-      if (!messages.length) {
-        return send(res, 400, messagesPage(load.messages, load.includeOlder ? "Kaikki viestit" : "Viimeiset 30 päivää", '<div class="error">Valitse vähintään yksi analysoitava viesti.</div>'));
-      }
-      await batches.submit(messages);
-      return redirect(res, "/messages");
-    }
-    if (req.method === "POST" && url.pathname === "/calendar/sync") {
-      if (!calendar.isConnected()) return redirect(res, "/oauth/google/start");
+      if (!calendar.isConnected()) return redirect(res, "/oauth/google/start?returnTo=%2Fmessages");
       const homework = homeworkRefresh.snapshot();
       if (homework.state === "running" || homework.state === "mfa") {
-        return send(res, 409, busyPage("Kotitehtävien päivitys on vielä käynnissä. Yritä kalenterin synkronointia sen valmistuttua."));
+        return send(res, 409, busyPage("Kotitehtävien päivitys on vielä käynnissä. Yritä analysointia sen valmistuttua."));
       }
       const load = messageLoad.snapshot();
       if (load.state === "fetching" || load.state === "mfa") {
         return send(res, 409, messageLoadingPage(load));
       }
-      calendarSync.start();
-      return redirect(res, "/");
+      if (!load.messages.length) return send(res, 409, messageLoadingPage(load));
+      if (!analyzeSync.start(load.messages)) {
+        return send(res, 409, busyPage("Analysointi tai kalenterin synkronointi on jo käynnissä."));
+      }
+      return redirect(res, "/messages");
     }
     if (req.method === "POST" && url.pathname === "/mfa") {
       const form = await readForm(req);
@@ -434,28 +444,28 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const returnTo = form.get("returnTo") || "/";
       const returnMethod = form.get("returnMethod") === "POST" ? "POST" : "GET";
       const safeReturnTo = safeReturnPath(returnTo);
-      if (returnMethod === "GET" && safeReturnTo === "/homework") {
+      if (returnMethod === "POST" && safeReturnTo === "/homework/refresh") {
         if (!homeworkRefresh.claimMfa(accountId)) {
           return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/homework">Takaisin kotitehtäviin</a></p>'));
         }
         wilma.submitMfaCode(accountId, code);
-        const runId = homeworkRefresh.start();
-        return redirect(res, `/homework?run=${encodeURIComponent(runId)}`);
+        const runId = homeworkRefresh.start({ force: true });
+        return redirect(res, `/homework?run=${encodeURIComponent(runId ?? "pending")}`);
       }
-      if (returnMethod === "POST" && safeReturnTo === "/calendar/sync") {
-        if (!calendarSync.claimMfa(accountId)) {
-          return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/">Takaisin etusivulle</a></p>'));
+      if (returnMethod === "POST" && safeReturnTo === "/messages/analyze") {
+        if (!analyzeSync.claimMfa(accountId)) {
+          return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/messages">Takaisin viesteihin</a></p>'));
         }
         wilma.submitMfaCode(accountId, code);
-        calendarSync.start();
-        return redirect(res, "/");
+        analyzeSync.start([]);
+        return redirect(res, "/messages");
       }
-      if (returnMethod === "POST" && safeReturnTo.startsWith("/messages")) {
+      if (returnMethod === "POST" && safeReturnTo === "/messages/refresh") {
         if (!messageLoad.claimMfa(accountId)) {
           return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/messages">Takaisin viesteihin</a></p>'));
         }
         wilma.submitMfaCode(accountId, code);
-        messageLoad.start({ includeOlder: new URL(safeReturnTo, config.baseUrl).searchParams.get("scope") === "all" });
+        messageLoad.start({ force: true });
         return redirect(res, "/messages");
       }
       wilma.submitMfaCode(accountId, code);
@@ -486,14 +496,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
 function otherWilmaOperationActive(): boolean {
   const messages = messageLoad.snapshot().state;
-  const calendarState = calendarSync.snapshot().state;
-  return messages === "fetching" || messages === "mfa" || calendarState === "running" || calendarState === "mfa";
+  const syncState = analyzeSync.snapshot().state;
+  return messages === "fetching" || messages === "mfa"
+    || syncState === "analyzing" || syncState === "syncing" || syncState === "mfa";
 }
 
 function knownRoute(pathname: string): string {
   return new Set([
     "/", "/healthz", "/oauth/google/start", "/oauth/google/callback", "/setup",
-    "/logout", "/homework", "/messages", "/messages/analyze", "/calendar/sync", "/mfa",
+    "/logout", "/homework", "/homework/refresh", "/messages", "/messages/refresh", "/messages/analyze", "/mfa",
     "/setup/discover",
   ]).has(pathname) ? pathname : "unknown";
 }

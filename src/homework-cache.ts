@@ -17,7 +17,7 @@ export function homeworkCacheIdentity(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-export function wilmaHomeworkCacheIdentity(accounts: WilmaAccountConfig[]): string {
+export function wilmaCacheIdentity(accounts: WilmaAccountConfig[]): string {
   return homeworkCacheIdentity(accounts.map((account) => ({
     id: account.id,
     baseUrl: account.baseUrl,
@@ -25,6 +25,8 @@ export function wilmaHomeworkCacheIdentity(accounts: WilmaAccountConfig[]): stri
     profiles: account.profiles,
   })));
 }
+
+export const wilmaHomeworkCacheIdentity = wilmaCacheIdentity;
 
 export class HomeworkCacheStore {
   private readonly db: DatabaseSync;

@@ -43,7 +43,7 @@ Roughly:
 }
 ```
 
-- **`calendarItems`** — the dated things in the message. This is what **Synkkaa kalenteriin**
+- **`calendarItems`** — the dated things in the message. This is what **Analysoi kaikki ja synkkaa kalenteri**
   turns into Google Calendar events. The per-item shape (title, date, time, location, which
   child) is [not settled yet](open-questions.md).
 - **`hasOtherContent`** — true when the message says something beyond the dates. This drives the

@@ -26,7 +26,7 @@ a restart and after leaving it idle for a day.
 ## 2. Google Calendar event identity
 
 Writing an event is easy. Writing it exactly once, across repeated syncs, is the actual problem.
-Pressing **Synkkaa kalenteriin** twice must not produce two identical events, and a re-analysed
+Pressing **Analysoi kaikki ja synkkaa kalenteri** twice must not produce two identical events, and a re-analysed
 message whose date moved must move the event rather than add a second one.
 
 Unknown:

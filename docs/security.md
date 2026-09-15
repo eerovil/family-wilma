@@ -32,10 +32,9 @@ not negotiable even though the deployment is a private box.
 
 ## Persist as little as possible
 
-Two Wilma-derived datasets are written to disk: the [analysis cache](llm-cache.md), because
-sending the same message to Sonnet repeatedly would be wasteful, and one replaceable homework
-snapshot, because restarts otherwise make the family wait for every child's overview again.
-Messages remain memory-only.
+Three Wilma-derived datasets are written to disk: the [analysis cache](llm-cache.md), one
+replaceable 30-day message snapshot, and one replaceable homework snapshot. The snapshots avoid
+making the family wait for Wilma again after routine application restarts.
 
 Two consequences worth being deliberate about:
 
@@ -46,9 +45,12 @@ Two consequences worth being deliberate about:
 - The homework snapshot contains child names, student numbers, subjects, teachers, and raw
   homework text. It is kept only in the mode-0600 household SQLite file, replaced after each
   successful refresh, and never logged or sent to Sentry.
+- The message snapshot contains the raw bodies of messages from the last 30 days. It has the same
+  mode-0600 and no-logging restrictions and is replaced after each successful refresh; it is not
+  a historical archive.
 
-Anything that would put message bodies on disk — a search index, a local archive, a debug dump —
-needs a much better reason than convenience.
+Anything that would retain message bodies beyond that bounded snapshot — a search index, a local
+archive, or a debug dump — needs a much better reason than convenience.
 
 ## Trusted-device PWA cache
 

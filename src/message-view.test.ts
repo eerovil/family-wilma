@@ -15,11 +15,12 @@ const message: FetchedMessage = {
 };
 
 test("message cards are collapsed by default and wrap unbroken content", () => {
-  const html = renderMessageCard({ message, analysis: null, pending: false, selectionId: "opaque" });
+  const html = renderMessageCard({ message, analysis: null, pending: false });
 
   assert.match(html, /<details>/);
   assert.doesNotMatch(html, /<details\s+open/);
   assert.match(html, /<summary>[\s\S]*A very long message[\s\S]*<\/summary>/);
   assert.match(html, /<div class="message-body">[\s\S]*unbroken[\s\S]*<\/div>/);
   assert.match(MESSAGE_CARD_CSS, /overflow-wrap:anywhere/);
+  assert.doesNotMatch(html, /checkbox|Valitse analysoitavaksi/);
 });

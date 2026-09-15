@@ -11,15 +11,11 @@ export function renderMessageCard(options: {
   message: FetchedMessage;
   analysis: MessageAnalysis | null;
   pending: boolean;
-  selectionId: string;
 }): string {
-  const { message, analysis, pending, selectionId } = options;
+  const { message, analysis, pending } = options;
   const calendarItems = analysis?.calendarItems ?? [];
   const hasOtherContent = analysis?.hasOtherContent ?? false;
   const state = analysis ? "Analysoitu" : pending ? "Analyysi jonossa" : "Ei analysoitu";
-  const selection = analysis || pending
-    ? ""
-    : `<label class="select"><input type="checkbox" name="message" value="${escapeHtml(selectionId)}"> Valitse analysoitavaksi</label>`;
   const items = calendarItems.length
     ? `<div class="calendar"><strong>Kalenteriin:</strong>${calendarItems.map((item) => `<div>${escapeHtml(item.date)}${item.time ? ` ${escapeHtml(item.time)}` : ""} — ${escapeHtml(item.title)}</div>`).join("")}</div>`
     : "";
@@ -29,6 +25,5 @@ export function renderMessageCard(options: {
 <details>
 <summary><h2>${escapeHtml(message.subject)}</h2><p class="muted">${escapeHtml(message.sender)} · ${escapeHtml(message.sentAt.toLocaleString("fi-FI", { timeZone: "Europe/Helsinki" }))} · ${state}</p></summary>
 <div class="message-body">${escapeHtml(message.content)}</div>${items}
-</details>
-${selection}</article>`;
+</details></article>`;
 }
