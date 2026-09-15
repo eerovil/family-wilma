@@ -50,6 +50,13 @@ Two consequences worth being deliberate about:
 Anything that would put message bodies on disk — a search index, a local archive, a debug dump —
 needs a much better reason than convenience.
 
+## Trusted-device PWA cache
+
+An installed browser may store successful authenticated GET pages, including rendered messages
+and homework, in its Cache Storage for offline use. This is an explicit trusted-device tradeoff:
+OAuth routes, redirects, and every non-GET action are excluded, but signing out does not erase
+the device's offline page cache. Clear the site's stored data before sharing or retiring a device.
+
 ## Authentication and network boundary
 
 One deployment still serves one household, with no roles or admin panel. Every application page

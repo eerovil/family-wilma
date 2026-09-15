@@ -53,6 +53,23 @@ test("health stays public while application pages require Google sign-in", async
     const health = await fetch(`http://127.0.0.1:${port}/healthz`);
     assert.equal(health.status, 200);
 
+    const manifestResponse = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`);
+    assert.equal(manifestResponse.status, 200);
+    assert.match(manifestResponse.headers.get("content-type") ?? "", /application\/manifest\+json/);
+    assert.equal(manifestResponse.headers.get("cache-control"), "no-cache");
+    assert.equal((await manifestResponse.json() as { name: string }).name, "Family Wilma");
+
+    const workerResponse = await fetch(`http://127.0.0.1:${port}/sw.js`);
+    assert.equal(workerResponse.status, 200);
+    assert.match(workerResponse.headers.get("content-type") ?? "", /text\/javascript/);
+    assert.equal(workerResponse.headers.get("service-worker-allowed"), "/");
+    assert.match(await workerResponse.text(), /family-wilma-/);
+
+    const iconResponse = await fetch(`http://127.0.0.1:${port}/icon-192.png`);
+    assert.equal(iconResponse.status, 200);
+    assert.equal(iconResponse.headers.get("content-type"), "image/png");
+    assert.ok((await iconResponse.arrayBuffer()).byteLength > 1_000);
+
     for (const [method, path] of [
       ["GET", "/"],
       ["GET", "/homework"],
@@ -100,7 +117,10 @@ test("health stays public while application pages require Google sign-in", async
       headers: { cookie: `family_wilma_session=${token}` },
     });
     assert.equal(signedInHome.status, 200);
-    assert.match(await signedInHome.text(), /href="\/homework">Kotitehtävät/);
+    const signedInHomeHtml = await signedInHome.text();
+    assert.match(signedInHomeHtml, /href="\/homework">Kotitehtävät/);
+    assert.match(signedInHomeHtml, /rel="manifest" href="\/manifest\.webmanifest"/);
+    assert.match(signedInHomeHtml, /<script defer src="\/pwa\.js"><\/script>/);
 
     const homeworkStartedAt = Date.now();
     const homework = await fetch(`http://127.0.0.1:${port}/homework`, {

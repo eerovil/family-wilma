@@ -18,6 +18,8 @@ import { PedanetHomeworkService } from "./pedanet-homework.js";
 import { HOMEWORK_VIEW_CSS, renderHomeworkContent } from "./homework-view.js";
 import { HomeworkCacheStore, homeworkCacheIdentity, wilmaHomeworkCacheIdentity } from "./homework-cache.js";
 import { HomeworkRefreshJob, type HomeworkRefreshSnapshot } from "./homework-refresh.js";
+import { THEME_COLOR } from "./pwa-content.js";
+import { pwaAsset } from "./pwa.js";
 
 initializeErrorReporting({
   dsn: process.env.SENTRY_DSN,
@@ -108,10 +110,12 @@ function escapeHtml(value: string): string {
 
 function layout(title: string, body: string, head = ""): string {
   return `<!doctype html>
-<html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="theme-color" content="${THEME_COLOR}"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <title>${escapeHtml(title)}</title>${head}<style>
 :root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}button:disabled{background:#94a3b8;cursor:wait}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}${MESSAGE_CARD_CSS}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
-</style><style>${HOMEWORK_VIEW_CSS}</style></head><body><main class="wrap">${body}</main></body></html>`;
+  </style><style>${HOMEWORK_VIEW_CSS}</style></head><body><main class="wrap">${body}</main><script defer src="/pwa.js"></script></body></html>`;
 }
 
 function home(): string {
@@ -329,6 +333,14 @@ function messageCalendarItems(analyzed: AnalyzedMessage[]): SourceCalendarItem[]
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", config.baseUrl);
   try {
+    if (req.method === "GET") {
+      const asset = pwaAsset(url.pathname);
+      if (asset) {
+        res.writeHead(200, asset.headers);
+        res.end(asset.body);
+        return;
+      }
+    }
     if (req.method === "GET" && url.pathname === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));

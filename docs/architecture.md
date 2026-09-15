@@ -37,6 +37,11 @@ promptly. Their active state is intentionally not durable; only data that must s
 **Self-hosted via Docker Compose.** One service, one mounted volume for the SQLite file. The
 target is a VPS or a home server, not a managed platform.
 
+**Installable browser shell.** The server publishes an origin-bound manifest, icons, and one
+root-scoped service worker. Navigations remain network-first. Successful authenticated GET pages
+are stored in that browser for exact-page offline use; OAuth routes and writes bypass the cache.
+PWA assets use a content-derived cache generation so a changed shell replaces its predecessor.
+
 ## Storage
 
 **A small SQLite file holds the analysis cache and the latest successful homework snapshot.**

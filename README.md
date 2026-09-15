@@ -20,6 +20,11 @@ background refresh. The page updates when the refresh finishes; a failed refresh
 successful snapshot visible with its saved timestamp. Changing the configured Wilma household
 or Peda.net source invalidates the corresponding snapshot.
 
+Family Wilma is installable as a PWA. Its service worker uses the network first and stores
+successful application pages on that browser for offline access. OAuth routes and all writes are
+never cached. Because cached pages can contain family data, install it only on a trusted device
+and remove the site's stored data when that device changes hands.
+
 Recent messages load through one in-process background job so a large inbox cannot hold the
 browser request open. Opening the message list only reads Wilma: it never starts AI analysis.
 Repeated clicks reuse the running fetch instead of starting duplicate Wilma requests.
