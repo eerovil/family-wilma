@@ -18,6 +18,13 @@ export interface CalendarSyncPlan {
   lessonWindow: LessonWindow;
 }
 
+export interface CalendarSyncResult {
+  created: number;
+  updated: number;
+  unchanged: number;
+  deleted: number;
+}
+
 interface CalendarMap {
   shared: string | null;
   lessons: Record<string, string>;
@@ -79,7 +86,7 @@ export class GoogleCalendarService {
     return email;
   }
 
-  async sync(plan: CalendarSyncPlan): Promise<{ created: number; updated: number; unchanged: number; deleted: number }> {
+  async sync(plan: CalendarSyncPlan): Promise<CalendarSyncResult> {
     const token = this.loadToken();
     if (!token) throw new Error("Google Calendar is not connected");
     const auth = this.oauth();

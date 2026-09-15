@@ -11,6 +11,7 @@ import { MESSAGE_CARD_CSS, renderMessageCard } from "./message-view.js";
 import { AnalysisStore, type CalendarItem } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
+import { CalendarSyncJob, type CalendarSyncSnapshot } from "./calendar-sync.js";
 import { configureErrorReportingSecrets, flushErrorReporting, initializeErrorReporting, reportError } from "./telemetry.js";
 
 initializeErrorReporting({
@@ -42,11 +43,27 @@ const wilma = new WilmaService(config);
 const calendar = new GoogleCalendarService(config);
 const sessions = new SessionStore(config.dataDir);
 const secureCookies = config.baseUrl.startsWith("https://");
-let calendarSyncRunning = false;
 const messageLoad = new MessageLoadJob({
   fetch: (options) => wilma.fetchAll(options),
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error) => reportError(error, { operation: "message.load" }),
+});
+const calendarSync = new CalendarSyncJob({
+  sync: async () => {
+    await batches.refresh().catch((error) => reportError(error, { operation: "analysis.batch.refresh" }));
+    const bundle = await wilma.fetchAll({
+      sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000),
+      includeLessons: true,
+    });
+    if (!bundle.lessonWindow) throw new Error("Lesson window was not returned");
+    return await calendar.sync({
+      sharedItems: [...bundle.structuredCalendarItems, ...messageCalendarItems(cachedMessages(bundle.messages))],
+      lessonCalendars: bundle.lessonCalendars,
+      lessonWindow: bundle.lessonWindow,
+    });
+  },
+  mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
+  reportError: (error) => reportError(error, { operation: "calendar.sync" }),
 });
 
 interface AnalyzedMessage {
@@ -63,21 +80,47 @@ function layout(title: string, body: string, head = ""): string {
   return `<!doctype html>
 <html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>${escapeHtml(title)}</title>${head}<style>
-:root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}${MESSAGE_CARD_CSS}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
+:root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}button:disabled{background:#94a3b8;cursor:wait}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}${MESSAGE_CARD_CSS}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
 </style></head><body><main class="wrap">${body}</main></body></html>`;
 }
 
 function home(): string {
+  const sync = calendarSync.snapshot();
+  if (sync.state === "mfa" && sync.mfaAccountId) return mfaPage(sync.mfaAccountId, "/calendar/sync", "POST");
   const google = calendar.isConnected()
     ? '<span class="muted">Google Calendar yhdistetty</span>'
     : '<a class="toplink" href="/oauth/google/start">Yhdistä Google Calendar</a>';
+  const syncStatus = calendarSyncStatus(sync);
+  const syncButton = sync.state === "running"
+    ? '<button type="submit" disabled>Synkronointi käynnissä…</button>'
+    : '<button type="submit">Synkkaa kalenteriin</button>';
   return layout("Family Wilma", `
 <h1>Family Wilma</h1>
 <div class="actions">
   <form method="post" action="/messages"><button type="submit">Näytä viimeiset 30 päivää</button></form>
-  <form method="post" action="/calendar/sync"><button type="submit">Synkkaa kalenteriin</button></form>
+  <form method="post" action="/calendar/sync">${syncButton}</form>
 </div>
-<p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`);
+${syncStatus.html}<p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`, syncStatus.refresh ? '<meta http-equiv="refresh" content="3">' : "");
+}
+
+function calendarSyncStatus(snapshot: CalendarSyncSnapshot): { html: string; refresh: boolean } {
+  if (snapshot.state === "running") {
+    return {
+      html: '<div class="card"><strong>Kalenteria synkronoidaan…</strong><p class="muted">Sivun voi sulkea. Työ jatkuu palvelimella.</p></div>',
+      refresh: true,
+    };
+  }
+  if (snapshot.state === "success" && snapshot.result) {
+    const result = snapshot.result;
+    return {
+      html: `<div class="success">Synkronointi valmis: luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}.</div>`,
+      refresh: false,
+    };
+  }
+  if (snapshot.state === "error") {
+    return { html: `<div class="error">${escapeHtml(snapshot.error ?? "Kalenterin synkronointi epäonnistui.")}</div>`, refresh: false };
+  }
+  return { html: "", refresh: false };
 }
 
 function cachedMessages(messages: FetchedMessage[]): AnalyzedMessage[] {
@@ -231,7 +274,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return send(res, 200, layout("Kirjauduttu ulos", '<h1>Kirjauduttu ulos</h1><p><a class="toplink" href="/oauth/google/start">Kirjaudu uudelleen Googlella</a></p>'));
     }
     if (req.method === "POST" && url.pathname === "/messages") {
-      if (calendarSyncRunning) {
+      if (calendarSync.snapshot().state === "running") {
         return send(res, 409, busyPage("Kalenterin synkronointi on vielä käynnissä. Yritä viestien lataamista sen valmistuttua."));
       }
       messageLoad.start({ includeOlder: url.searchParams.get("scope") === "all" });
@@ -255,31 +298,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
     if (req.method === "POST" && url.pathname === "/calendar/sync") {
       if (!calendar.isConnected()) return redirect(res, "/oauth/google/start");
-      if (calendarSyncRunning) {
-        return send(res, 409, busyPage("Kalenterin synkronointi on jo käynnissä."));
-      }
       const load = messageLoad.snapshot();
       if (load.state === "fetching" || load.state === "mfa") {
         return send(res, 409, messageLoadingPage(load));
       }
-      calendarSyncRunning = true;
-      try {
-        await batches.refresh().catch((error) => reportError(error, { operation: "analysis.batch.refresh" }));
-        const bundle = await wilma.fetchAll({
-          sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000),
-          includeLessons: true,
-        });
-        if (!bundle.lessonWindow) throw new Error("Lesson window was not returned");
-        const analyzed = cachedMessages(bundle.messages);
-        const result = await calendar.sync({
-          sharedItems: [...bundle.structuredCalendarItems, ...messageCalendarItems(analyzed)],
-          lessonCalendars: bundle.lessonCalendars,
-          lessonWindow: bundle.lessonWindow,
-        });
-        return send(res, 200, layout("Kalenteri synkattu", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kalenteri synkattu</h1><div class="success">Luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}.</div>`));
-      } finally {
-        calendarSyncRunning = false;
-      }
+      calendarSync.start();
+      return redirect(res, "/");
     }
     if (req.method === "POST" && url.pathname === "/mfa") {
       const form = await readForm(req);
@@ -288,6 +312,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const returnTo = form.get("returnTo") || "/";
       const returnMethod = form.get("returnMethod") === "POST" ? "POST" : "GET";
       const safeReturnTo = safeReturnPath(returnTo);
+      if (returnMethod === "POST" && safeReturnTo === "/calendar/sync") {
+        if (!calendarSync.claimMfa(accountId)) {
+          return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/">Takaisin etusivulle</a></p>'));
+        }
+        wilma.submitMfaCode(accountId, code);
+        calendarSync.start();
+        return redirect(res, "/");
+      }
       if (returnMethod === "POST" && safeReturnTo.startsWith("/messages")) {
         if (!messageLoad.claimMfa(accountId)) {
           return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/messages">Takaisin viesteihin</a></p>'));

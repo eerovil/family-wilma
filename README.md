@@ -189,6 +189,12 @@ explicitly and have reached the local cache. Sync never analyzes missing results
 historical backfill is intentionally outside the v1 application workflow and can be handled
 manually.
 
+Calendar sync runs as an in-process background job. The start request returns immediately, the
+home page refreshes while the job is running, and closing the browser does not cancel it. The
+latest completion counts or a retryable error remain visible on the home page. An application
+restart interrupts an active sync; it is never retried automatically because an interrupted
+Google write can have an uncertain result.
+
 ## Privacy and logs
 
 Secrets remain server-side. The application never intentionally logs Wilma credentials, message bodies, child data, Google tokens, or prompts containing private Wilma content. Request failures log only a fixed error category and return a generic browser error page.
