@@ -4,7 +4,13 @@ import { analysisIdentity, batchAnalysisRequest, MessageAnalyzer, parseAnalysis 
 import { AnalysisStore, type AnalysisBatchStatus } from "./store.js";
 import type { FetchedMessage } from "./wilma.js";
 
-export class AnalysisBatchService {
+export interface AnalysisBatchAdapter {
+  submit(messages: FetchedMessage[]): Promise<{ batchId: string; submitted: number } | null>;
+  refresh(): Promise<void>;
+  statuses(): AnalysisBatchStatus[];
+}
+
+export class AnalysisBatchService implements AnalysisBatchAdapter {
   private submitting = false;
   private refreshing: Promise<void> | null = null;
 

@@ -10,6 +10,7 @@ import type { SourceCalendarItem } from "./wilma.js";
 function service() {
   const dataDir = mkdtempSync(join(tmpdir(), "family-wilma-google-"));
   const config: AppConfig = {
+    analysisMode: "anthropic",
     port: 3000,
     host: "127.0.0.1",
     baseUrl: "http://localhost:3000",
@@ -245,6 +246,7 @@ test("sync creates owned calendars, routes lessons separately, and removes stale
 test("calendar writes are paced and retry only explicit rate-limit rejections", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "family-wilma-google-rate-limit-"));
   const config: AppConfig = {
+    analysisMode: "anthropic",
     port: 3000,
     host: "127.0.0.1",
     baseUrl: "http://localhost:3000",

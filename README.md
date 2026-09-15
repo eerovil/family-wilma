@@ -85,6 +85,22 @@ content + analyzer version. An unchanged or already-pending message is therefore
 again. Batch bookkeeping stores these identities and provider request ids, but not Wilma message
 bodies.
 
+For agent-operated local development, set `ANALYSIS_MODE=manual` and leave
+`ANTHROPIC_API_KEY` empty. The same selection button then writes a private request under
+`DATA_DIR/manual-analysis` instead of contacting Anthropic. Request files are mode 0600 and
+contain only explicitly selected messages. An operator or coding agent can process them with:
+
+```sh
+npm run manual-analysis -- pending
+npm run manual-analysis -- export manual-<id> /private/path/request.json
+npm run manual-analysis -- import manual-<id> /path/to/results.json
+```
+
+The import file uses `{ "version": 1, "batchId": "manual-<id>", "results": [...] }`; every
+result has the request's `customId` and an `analysis` object in the documented format below.
+Imports must be complete and valid. After a successful import, the request containing the
+message text is deleted and only the normal SQLite analysis cache remains.
+
 The cached structured result is split into:
 
 ```json
@@ -197,4 +213,8 @@ Google write can have an uncertain result.
 
 ## Privacy and logs
 
-Secrets remain server-side. The application never intentionally logs Wilma credentials, message bodies, child data, Google tokens, or prompts containing private Wilma content. Request failures log only a fixed error category and return a generic browser error page.
+Secrets remain server-side. The application never intentionally logs Wilma credentials, message
+bodies, child data, Google tokens, or prompts containing private Wilma content. Manual localdev
+analysis is the explicit exception to body persistence: selected messages remain in its private
+queue until a successful import. Request failures log only a fixed error category and return a
+generic browser error page.

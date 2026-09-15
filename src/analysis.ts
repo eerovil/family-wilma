@@ -36,6 +36,13 @@ const ANALYSIS_SCHEMA = {
 
 const ANALYSIS_OUTPUT_FORMAT = jsonSchemaOutputFormat(ANALYSIS_SCHEMA);
 
+export const ANALYSIS_INSTRUCTIONS = [
+  "You extract calendar-worthy facts from Finnish school/daycare Wilma messages for a parent.",
+  "Return JSON matching: {\"calendarItems\":[{\"title\":string,\"date\":\"YYYY-MM-DD\",\"time\":string|null,\"endDate\":\"YYYY-MM-DD\"|null,\"description\":string|null}],\"hasOtherContent\":boolean}.",
+  "hasOtherContent is true whenever meaningful information would be lost if the parent saw only the calendar items. When uncertain, use true.",
+  "Do not invent dates. Resolve relative dates using the message sent date where possible; otherwise omit that calendar item.",
+];
+
 export interface AnalyzableMessage {
   accountId: string;
   studentNumber: string;
@@ -92,13 +99,7 @@ function prompt(message: AnalyzableMessage) {
   return {
     model: SONNET_MODEL,
     max_tokens: 1200,
-    system: [
-      "You extract calendar-worthy facts from Finnish school/daycare Wilma messages for a parent.",
-      "Return the result using the provided output schema.",
-      "Schema: {\"calendarItems\":[{\"title\":string,\"date\":\"YYYY-MM-DD\",\"time\":string|null,\"endDate\":\"YYYY-MM-DD\"|null,\"description\":string|null}],\"hasOtherContent\":boolean}.",
-      "hasOtherContent is true whenever the message contains meaningful information that would be lost if the parent saw only the calendar items. When uncertain, use true.",
-      "Do not invent dates. Resolve relative dates using the message sent date where possible; otherwise omit that calendar item.",
-    ].join("\n"),
+    system: ANALYSIS_INSTRUCTIONS.join("\n"),
     messages: [{
       role: "user" as const,
       content: [
@@ -123,10 +124,10 @@ export function batchAnalysisRequest(message: AnalyzableMessage): Anthropic.Mess
 }
 
 export class MessageAnalyzer {
-  private readonly anthropic: Anthropic;
+  private readonly anthropic: Anthropic | null;
 
-  constructor(apiKey: string, private readonly store: AnalysisStore, anthropic?: Anthropic) {
-    this.anthropic = anthropic ?? new Anthropic({ apiKey });
+  constructor(apiKey: string | null, private readonly store: AnalysisStore, anthropic?: Anthropic) {
+    this.anthropic = anthropic ?? (apiKey ? new Anthropic({ apiKey }) : null);
   }
 
   cached(message: AnalyzableMessage): MessageAnalysis | null {
@@ -138,6 +139,7 @@ export class MessageAnalyzer {
     const cached = this.store.get(cacheIdentity);
     if (cached) return { analysis: cached, cached: true };
 
+    if (!this.anthropic) throw new Error("Anthropic analysis is disabled");
     const response = await this.anthropic.messages.parse({
       ...prompt(message),
       output_config: { format: ANALYSIS_OUTPUT_FORMAT },

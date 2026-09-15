@@ -16,7 +16,8 @@ export interface AppConfig {
   host: string;
   baseUrl: string;
   dataDir: string;
-  anthropicApiKey: string;
+  analysisMode: "anthropic" | "manual";
+  anthropicApiKey: string | null;
   googleClientId: string;
   googleClientSecret: string;
   googleAllowedEmail: string;
@@ -69,12 +70,32 @@ export function loadConfig(): AppConfig {
   const port = Number(process.env.PORT ?? "3000");
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("PORT must be a valid TCP port");
   const baseUrl = (process.env.APP_BASE_URL ?? `http://localhost:${port}`).trim().replace(/\/$/, "");
+  const host = process.env.HOST?.trim() || "127.0.0.1";
+  const analysisMode = process.env.ANALYSIS_MODE?.trim() || "anthropic";
+  if (analysisMode !== "anthropic" && analysisMode !== "manual") {
+    throw new Error("ANALYSIS_MODE must be anthropic or manual");
+  }
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY?.trim() || null;
+  if (analysisMode === "anthropic" && !anthropicApiKey) throw new Error("ANTHROPIC_API_KEY is required");
+  if (analysisMode === "manual") {
+    let hostname: string;
+    try {
+      hostname = new URL(baseUrl).hostname;
+    } catch {
+      throw new Error("APP_BASE_URL must be a valid URL");
+    }
+    const loopbackNames = new Set(["localhost", "127.0.0.1", "::1"]);
+    if (!loopbackNames.has(host) || !loopbackNames.has(hostname)) {
+      throw new Error("Manual analysis requires loopback HOST and APP_BASE_URL");
+    }
+  }
   return {
     port,
-    host: process.env.HOST?.trim() || "127.0.0.1",
+    host,
     baseUrl,
     dataDir: process.env.DATA_DIR?.trim() || "./data",
-    anthropicApiKey: required("ANTHROPIC_API_KEY"),
+    analysisMode,
+    anthropicApiKey,
     googleClientId: required("GOOGLE_CLIENT_ID"),
     googleClientSecret: required("GOOGLE_CLIENT_SECRET"),
     googleAllowedEmail: required("GOOGLE_ALLOWED_EMAIL").toLowerCase(),

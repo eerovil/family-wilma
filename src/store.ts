@@ -48,6 +48,7 @@ export class AnalysisStore {
     this.db = new DatabaseSync(databasePath);
     chmodSync(databasePath, 0o600);
     this.db.exec(`
+      PRAGMA busy_timeout = 5000;
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS message_analysis (
         cache_key TEXT PRIMARY KEY,
@@ -205,7 +206,7 @@ export class AnalysisStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare(`
-        INSERT OR REPLACE INTO message_analysis
+        INSERT OR IGNORE INTO message_analysis
           (cache_key, account_id, student_number, message_id, content_hash, analyzer_version, analysis_json, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(item.cache_key, item.account_id, item.student_number, item.message_id, item.content_hash,

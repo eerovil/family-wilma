@@ -3,7 +3,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { URL } from "node:url";
 import { loadConfig } from "./config.js";
 import { analysisIdentity, MessageAnalyzer } from "./analysis.js";
-import { AnalysisBatchService } from "./batch-analysis.js";
+import { AnalysisBatchService, type AnalysisBatchAdapter } from "./batch-analysis.js";
+import { ManualAnalysisAdapter } from "./manual-analysis.js";
 import { GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
@@ -34,11 +35,15 @@ configureErrorReportingSecrets([
   config.anthropicApiKey,
   config.googleClientSecret,
   ...config.wilmaAccounts.flatMap((account) => [account.username, account.password]),
-]);
+].filter((value): value is string => Boolean(value)));
 const store = new AnalysisStore(config.dataDir);
-const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
-const analyzer = new MessageAnalyzer(config.anthropicApiKey, store, anthropic);
-const batches = new AnalysisBatchService(store, analyzer, anthropic);
+const anthropic = config.analysisMode === "anthropic"
+  ? new Anthropic({ apiKey: config.anthropicApiKey! })
+  : null;
+const analyzer = new MessageAnalyzer(config.anthropicApiKey, store, anthropic ?? undefined);
+const batches: AnalysisBatchAdapter = config.analysisMode === "manual"
+  ? new ManualAnalysisAdapter(config.dataDir, store)
+  : new AnalysisBatchService(store, analyzer, anthropic!);
 const wilma = new WilmaService(config);
 const calendar = new GoogleCalendarService(config);
 const sessions = new SessionStore(config.dataDir);
@@ -169,10 +174,15 @@ function hasSelectableMessages(messages: FetchedMessage[]): boolean {
 
 function batchStatus(): { html: string; active: boolean } {
   const statuses = batches.statuses();
-  const active = statuses.some((status) => status.status === "in_progress");
+  const active = config.analysisMode === "anthropic" && statuses.some((status) => status.status === "in_progress");
   const html = statuses.slice(0, 3).map((status) => {
     if (status.status === "submitting") {
-      return '<div class="error">Batch-lähetyksen tila jäi epävarmaksi. Viestejä ei lähetetä automaattisesti uudelleen.</div>';
+      return config.analysisMode === "manual"
+        ? '<div class="error">Paikallisen analyysipyynnön tallennus jäi kesken.</div>'
+        : '<div class="error">Batch-lähetyksen tila jäi epävarmaksi. Viestejä ei lähetetä automaattisesti uudelleen.</div>';
+    }
+    if (config.analysisMode === "manual" && status.status === "in_progress") {
+      return `<div class="card"><strong>Odottaa paikallista agenttianalyysiä</strong><p class="muted">${status.total} viestiä jonossa. Viestejä ei lähetetty Anthropic APIin.</p></div>`;
     }
     return status.status === "in_progress"
       ? `<div class="card"><strong>Batch-analyysi käynnissä</strong><p class="muted">${status.total} viestiä · valmiina ${status.succeeded + status.failed}/${status.total}</p></div>`
@@ -185,7 +195,7 @@ function messagesPage(messages: FetchedMessage[], title = "Kaikki viestit", afte
   const status = batchStatus();
   const cards = messageCards(messages);
   const submit = hasSelectableMessages(messages)
-    ? '<div class="analyze-bar"><button type="submit">Analysoi valitut batchina</button></div>'
+    ? `<div class="analyze-bar"><button type="submit">${config.analysisMode === "manual" ? "Jonota valitut agentille" : "Analysoi valitut batchina"}</button></div>`
     : "";
   const form = cards ? `<form method="post" action="/messages/analyze">${cards}${submit}</form>` : '<p class="muted">Ei viestejä.</p>';
   return layout(title, `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>${escapeHtml(title)}</h1>${status.html}${form}${after}`, status.active ? '<meta http-equiv="refresh" content="10">' : "");
