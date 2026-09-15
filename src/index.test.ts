@@ -102,6 +102,14 @@ test("health stays public while application pages require Google sign-in", async
     assert.equal(signedInHome.status, 200);
     assert.match(await signedInHome.text(), /href="\/homework">Kotitehtävät/);
 
+    const homeworkStartedAt = Date.now();
+    const homework = await fetch(`http://127.0.0.1:${port}/homework`, {
+      headers: { cookie: `family_wilma_session=${token}` },
+    });
+    assert.equal(homework.status, 200);
+    assert.ok(Date.now() - homeworkStartedAt < 1_000, "homework page must not wait for refresh");
+    assert.match(await homework.text(), /Kotitehtävät/);
+
     const startedAt = Date.now();
     const startMessages = await fetch(`http://127.0.0.1:${port}/messages`, {
       method: "POST",

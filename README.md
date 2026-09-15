@@ -9,10 +9,16 @@ The normal daily-use screen intentionally has three primary actions:
 - **Synkkaa kalenteriin**
 
 **Kotitehtävät** reads each discovered child's Wilma overview and presents one combined
-chronological list, newest first. Nothing is grouped or stored locally. The card at the top
+chronological list, newest first. Nothing is grouped. The card at the top
 also reads Einari's latest dated homework block from the configured public Peda.net class page.
 If that page contains alternatives for different groups, they are shown verbatim rather than
 guessed. A Peda.net failure affects only that card; Wilma homework remains available.
+
+The latest successful Wilma and Peda.net homework responses are stored in the private SQLite
+database. Opening the view renders that snapshot immediately and always starts one coalesced
+background refresh. The page updates when the refresh finishes; a failed refresh keeps the last
+successful snapshot visible with its saved timestamp. Changing the configured Wilma household
+or Peda.net source invalidates the corresponding snapshot.
 
 Recent messages load through one in-process background job so a large inbox cannot hold the
 browser request open. Opening the message list only reads Wilma: it never starts AI analysis.

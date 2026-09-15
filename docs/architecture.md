@@ -21,7 +21,8 @@ database file. Anything that would make it bigger needs a concrete reason first.
                     │  │ Calendar sync          │──┼──▶ Google Calendar API
                     │  └────────────────────────┘  │
                     │  ┌────────────────────────┐  │
-                    │  │ Analysis cache         │──┼──▶ SQLite file
+                    │  │ Analysis + homework    │──┼──▶ SQLite file
+                    │  │ cache                  │  │
                     │  └────────────────────────┘  │
                     └──────────────────────────────┘
 ```
@@ -29,21 +30,23 @@ database file. Anything that would make it bigger needs a concrete reason first.
 ## Runtime
 
 **Node.js / TypeScript, one process.** Everything runs in the same process: serving the page,
-fetching from Wilma, calling Sonnet, writing to Google Calendar. Both user actions are things a
-person clicks and waits for, so there is nothing that needs to outlive a request.
+fetching from Wilma, calling Sonnet, and writing to Google Calendar. Message loading, homework
+refresh, and calendar sync are coalesced in-process background jobs so browser requests return
+promptly. Their active state is intentionally not durable; only data that must survive restart is.
 
 **Self-hosted via Docker Compose.** One service, one mounted volume for the SQLite file. The
 target is a VPS or a home server, not a managed platform.
 
 ## Storage
 
-**A small SQLite file, holding the analysis cache and nothing else.** Adding a table means
-deciding that some state genuinely cannot be re-derived from Wilma — see
-[open questions](open-questions.md) for what the schema will need to look like.
+**A small SQLite file holds the analysis cache and the latest successful homework snapshot.**
+Homework can be re-derived, but retaining one snapshot avoids forcing a slow Wilma refetch after
+every application restart. Cache rows are scoped by configuration fingerprints so a changed
+household or class-page source cannot display the previous source's data.
 
-**Fetched Wilma data lives in memory only.** Messages, students, and folders are held for the
-life of the process (or shorter) and re-fetched afterwards. A restart costs a refetch, which is
-the right trade for not keeping children's messages on disk.
+**Fetched Wilma messages live in memory only.** Messages, students, and folders are held for the
+life of the process (or shorter) and re-fetched afterwards. Homework is the deliberate exception:
+one latest successful response per source is stored and replaced atomically after refresh.
 
 ## Outbound integrations
 
@@ -74,9 +77,9 @@ Each of these is a real option that is being declined, not an oversight:
 | Not doing | Why |
 | --- | --- |
 | Redis | Nothing to share between processes; there is one process |
-| A queue | Both actions are click-and-wait; nothing needs to survive a restart |
+| A durable queue | Background jobs are coalesced in one process; active work may restart safely |
 | A background worker | Add one only when there is a concrete job that cannot run in a request |
 | A backup subsystem | Wilma is the source of truth; there is nothing here worth backing up |
 | Cloudflare Workers / D1 | This is a self-hosted box, not an edge deployment |
 | Multi-tenant / admin UI | One deployment, one household. Tenancy is the thing that makes small apps big |
-| A Wilma data archive | Same reason as backups, plus it means storing children's messages on disk |
+| A Wilma data archive | The homework cache is one replaceable snapshot, not a historical archive |

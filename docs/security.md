@@ -32,9 +32,10 @@ not negotiable even though the deployment is a private box.
 
 ## Persist as little as possible
 
-The only Wilma-derived thing written to disk is the [analysis cache](llm-cache.md), and only
-because sending the same message to Sonnet repeatedly would be wasteful. Everything else is held
-in memory and re-fetched.
+Two Wilma-derived datasets are written to disk: the [analysis cache](llm-cache.md), because
+sending the same message to Sonnet repeatedly would be wasteful, and one replaceable homework
+snapshot, because restarts otherwise make the family wait for every child's overview again.
+Messages remain memory-only.
 
 Two consequences worth being deliberate about:
 
@@ -42,6 +43,9 @@ Two consequences worth being deliberate about:
 - Whether the *analysis output* is safe to store is a real question, since `calendarItems` will
   contain dates and event titles taken from messages about specific children. It is stored
   because the app cannot work otherwise — but that is the ceiling, not a licence to store more.
+- The homework snapshot contains child names, student numbers, subjects, teachers, and raw
+  homework text. It is kept only in the mode-0600 household SQLite file, replaced after each
+  successful refresh, and never logged or sent to Sentry.
 
 Anything that would put message bodies on disk — a search index, a local archive, a debug dump —
 needs a much better reason than convenience.

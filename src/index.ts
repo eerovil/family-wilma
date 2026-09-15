@@ -10,12 +10,14 @@ import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
 import { MESSAGE_CARD_CSS, renderMessageCard } from "./message-view.js";
 import { AnalysisStore, type CalendarItem } from "./store.js";
-import { MfaCodeRequiredError, WilmaService, type FetchedHomework, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
+import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
 import { CalendarSyncJob, type CalendarSyncSnapshot } from "./calendar-sync.js";
 import { configureErrorReportingSecrets, flushErrorReporting, initializeErrorReporting, reportError } from "./telemetry.js";
-import { PedanetHomeworkService, type PedanetHomework } from "./pedanet-homework.js";
+import { PedanetHomeworkService } from "./pedanet-homework.js";
 import { HOMEWORK_VIEW_CSS, renderHomeworkContent } from "./homework-view.js";
+import { HomeworkCacheStore, homeworkCacheIdentity, wilmaHomeworkCacheIdentity } from "./homework-cache.js";
+import { HomeworkRefreshJob, type HomeworkRefreshSnapshot } from "./homework-refresh.js";
 
 initializeErrorReporting({
   dsn: process.env.SENTRY_DSN,
@@ -50,6 +52,24 @@ const wilma = new WilmaService(config);
 const pedanetHomework = config.pedanetHomeworkUrl && config.pedanetHomeworkModuleId
   ? new PedanetHomeworkService(config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId)
   : null;
+const homeworkCache = new HomeworkCacheStore(config.dataDir, {
+  wilma: wilmaHomeworkCacheIdentity(config.wilmaAccounts),
+  pedanet: pedanetHomework
+    ? homeworkCacheIdentity([config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId])
+    : null,
+});
+const homeworkRefresh = new HomeworkRefreshJob({
+  cache: homeworkCache,
+  waitForWilmaTurn: async () => {
+    while (otherWilmaOperationActive()) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  },
+  fetchWilma: () => wilma.fetchHomework(),
+  ...(pedanetHomework ? { fetchPedanet: () => pedanetHomework.latest() } : {}),
+  mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
+  reportError: (error, source) => reportError(error, { operation: `homework.${source}.fetch` }),
+});
 const calendar = new GoogleCalendarService(config);
 const sessions = new SessionStore(config.dataDir);
 const secureCookies = config.baseUrl.startsWith("https://");
@@ -114,34 +134,65 @@ function home(): string {
 ${syncStatus.html}<p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`, syncStatus.refresh ? '<meta http-equiv="refresh" content="3">' : "");
 }
 
-async function homeworkPage(): Promise<string> {
-  const [wilmaResult, pedanetResult] = await Promise.allSettled([
-    wilma.fetchHomework(),
-    pedanetHomework ? pedanetHomework.latest() : Promise.resolve(null),
-  ]);
-  if (wilmaResult.status === "rejected" && wilmaResult.reason instanceof MfaCodeRequiredError) {
-    throw wilmaResult.reason;
+function homeworkPage(snapshot: HomeworkRefreshSnapshot): string {
+  if (snapshot.state === "mfa" && snapshot.mfaAccountId) {
+    return mfaPage(snapshot.mfaAccountId, "/homework", "GET");
   }
+  const hasCache = Boolean(snapshot.wilmaUpdatedAt || snapshot.pedanetUpdatedAt);
+  const content = hasCache || snapshot.state !== "running"
+    ? renderHomeworkContent({
+      homework: snapshot.homework,
+      wilmaError: snapshot.wilmaError && !snapshot.wilmaUpdatedAt,
+      pedanet: snapshot.pedanet,
+      pedanetError: snapshot.pedanetError && !snapshot.pedanetUpdatedAt,
+      pedanetSourceUrl: config.pedanetHomeworkUrl,
+    })
+    : "";
+  const refresh = homeworkRefreshStatus(snapshot);
+  return layout(
+    "Kotitehtävät",
+    `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1>${refresh.html}${content}`,
+    refresh.pollUrl ? `<meta http-equiv="refresh" content="3;url=${escapeHtml(refresh.pollUrl)}">` : "",
+  );
+}
 
-  let homework: FetchedHomework[] = [];
-  let wilmaError = false;
-  if (wilmaResult.status === "fulfilled") {
-    homework = wilmaResult.value;
-  } else {
-    wilmaError = true;
-    reportError(wilmaResult.reason, { operation: "homework.wilma.fetch" });
+function homeworkRefreshStatus(snapshot: HomeworkRefreshSnapshot): { html: string; pollUrl: string | null } {
+  const saved = homeworkSavedTimes(snapshot);
+  if (snapshot.state === "running") {
+    return { html: `<div class="card"><strong>Kotitehtäviä päivitetään…</strong>${saved}<p class="muted">Näytetään tallennetut tiedot. Päivitys jatkuu taustalla.</p></div>`, pollUrl: `/homework?run=${encodeURIComponent(snapshot.runId ?? "pending")}` };
   }
-
-  let peda: PedanetHomework | null = null;
-  let pedanetError = false;
-  if (pedanetResult.status === "fulfilled") {
-    peda = pedanetResult.value;
-  } else {
-    pedanetError = true;
-    reportError(pedanetResult.reason, { operation: "homework.pedanet.fetch" });
+  if (snapshot.state === "error") {
+    const errors = [
+      snapshot.wilmaError ? staleSourceMessage("Wilma", snapshot.wilmaUpdatedAt) : "",
+      snapshot.pedanetError ? staleSourceMessage("Peda.net", snapshot.pedanetUpdatedAt) : "",
+    ].filter(Boolean).join("<br>");
+    return { html: `<div class="error">${errors}</div>${saved}`, pollUrl: null };
   }
+  if (snapshot.state === "success") {
+    return { html: saved, pollUrl: null };
+  }
+  return { html: saved, pollUrl: null };
+}
 
-  return layout("Kotitehtävät", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1>${renderHomeworkContent({ homework, wilmaError, pedanet: peda, pedanetError, pedanetSourceUrl: config.pedanetHomeworkUrl })}`);
+function homeworkSavedTimes(snapshot: HomeworkRefreshSnapshot): string {
+  const lines = [
+    snapshot.wilmaUpdatedAt ? `Wilma: ${formatTimestamp(snapshot.wilmaUpdatedAt)}` : "",
+    snapshot.pedanetUpdatedAt ? `Peda.net: ${formatTimestamp(snapshot.pedanetUpdatedAt)}` : "",
+  ].filter(Boolean);
+  return lines.length ? `<p class="muted">Tallennettu ${lines.map(escapeHtml).join(" · ")}</p>` : "";
+}
+
+function staleSourceMessage(source: string, updatedAt: string | null): string {
+  return updatedAt
+    ? `${escapeHtml(source)}-päivitys epäonnistui. Näytetään versio ajalta ${escapeHtml(formatTimestamp(updatedAt))}.`
+    : `${escapeHtml(source)}-päivitys epäonnistui, eikä tallennettua versiota ole.`;
+}
+
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat("fi-FI", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Helsinki" }).format(date);
 }
 
 function calendarSyncStatus(snapshot: CalendarSyncSnapshot): { html: string; refresh: boolean } {
@@ -313,7 +364,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (token) res.setHeader("set-cookie", sessionCookie(token, secureCookies));
 
     if (req.method === "GET" && url.pathname === "/") return send(res, 200, home());
-    if (req.method === "GET" && url.pathname === "/homework") return send(res, 200, await homeworkPage());
+    if (req.method === "GET" && url.pathname === "/homework") {
+      const before = homeworkRefresh.snapshot();
+      if (!url.searchParams.has("run") || before.state === "idle") homeworkRefresh.start();
+      return send(res, 200, homeworkPage(homeworkRefresh.snapshot()));
+    }
     if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage(config.googleAllowedEmail));
     if (req.method === "POST" && url.pathname === "/logout") {
       sessions.destroySession(token);
@@ -321,6 +376,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return send(res, 200, layout("Kirjauduttu ulos", '<h1>Kirjauduttu ulos</h1><p><a class="toplink" href="/oauth/google/start">Kirjaudu uudelleen Googlella</a></p>'));
     }
     if (req.method === "POST" && url.pathname === "/messages") {
+      const homework = homeworkRefresh.snapshot();
+      if (homework.state === "running" || homework.state === "mfa") {
+        return send(res, 409, busyPage("Kotitehtävien päivitys on vielä käynnissä. Yritä viestien lataamista sen valmistuttua."));
+      }
       if (calendarSync.snapshot().state === "running") {
         return send(res, 409, busyPage("Kalenterin synkronointi on vielä käynnissä. Yritä viestien lataamista sen valmistuttua."));
       }
@@ -345,6 +404,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
     if (req.method === "POST" && url.pathname === "/calendar/sync") {
       if (!calendar.isConnected()) return redirect(res, "/oauth/google/start");
+      const homework = homeworkRefresh.snapshot();
+      if (homework.state === "running" || homework.state === "mfa") {
+        return send(res, 409, busyPage("Kotitehtävien päivitys on vielä käynnissä. Yritä kalenterin synkronointia sen valmistuttua."));
+      }
       const load = messageLoad.snapshot();
       if (load.state === "fetching" || load.state === "mfa") {
         return send(res, 409, messageLoadingPage(load));
@@ -359,6 +422,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const returnTo = form.get("returnTo") || "/";
       const returnMethod = form.get("returnMethod") === "POST" ? "POST" : "GET";
       const safeReturnTo = safeReturnPath(returnTo);
+      if (returnMethod === "GET" && safeReturnTo === "/homework") {
+        if (!homeworkRefresh.claimMfa(accountId)) {
+          return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/homework">Takaisin kotitehtäviin</a></p>'));
+        }
+        wilma.submitMfaCode(accountId, code);
+        const runId = homeworkRefresh.start();
+        return redirect(res, `/homework?run=${encodeURIComponent(runId)}`);
+      }
       if (returnMethod === "POST" && safeReturnTo === "/calendar/sync") {
         if (!calendarSync.claimMfa(accountId)) {
           return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/">Takaisin etusivulle</a></p>'));
@@ -399,6 +470,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     });
     return send(res, 500, layout("Virhe", '<div class="error">Toiminto epäonnistui. Tarkista palvelimen asetukset ja yritä uudelleen.</div><p><a class="toplink" href="/">Etusivulle</a></p>'));
   }
+}
+
+function otherWilmaOperationActive(): boolean {
+  const messages = messageLoad.snapshot().state;
+  const calendarState = calendarSync.snapshot().state;
+  return messages === "fetching" || messages === "mfa" || calendarState === "running" || calendarState === "mfa";
 }
 
 function knownRoute(pathname: string): string {
