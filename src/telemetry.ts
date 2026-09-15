@@ -58,12 +58,14 @@ export function configureErrorReportingSecrets(secrets: string[]): void {
 export function reportError(error: unknown, context: ErrorContext): void {
   const safe = sanitizeErrorForReporting(error, configuredSecrets);
   const operation = safeTag(context.operation);
-  console.error(`${operation} failed: ${safe.name}: ${safe.message}`);
+  const errorTags = safeErrorTags(error);
+  const diagnosticTags = Object.entries(errorTags).map(([name, value]) => `${name}=${value}`).join(" ");
+  console.error(`${operation} failed: ${safe.name}: ${safe.message}${diagnosticTags ? ` (${diagnosticTags})` : ""}`);
   if (!enabled) return;
   Sentry.withScope((scope) => {
     scope.setTag("operation", operation);
     for (const [name, value] of Object.entries(context.tags ?? {})) scope.setTag(name, safeTag(value));
-    for (const [name, value] of Object.entries(safeErrorTags(error))) scope.setTag(name, value);
+    for (const [name, value] of Object.entries(errorTags)) scope.setTag(name, value);
     Sentry.captureException(safe);
   });
 }
@@ -116,12 +118,24 @@ function errorCategory(error: unknown): string {
 
 function safeErrorTags(error: unknown): Record<string, string> {
   if (!error || typeof error !== "object") return {};
-  const candidate = error as { code?: unknown };
+  const candidate = error as {
+    code?: unknown;
+    errors?: Array<{ reason?: unknown }>;
+    response?: { data?: { error?: { errors?: Array<{ reason?: unknown }>; status?: unknown } } };
+  };
   const tags: Record<string, string> = {};
   const status = errorStatus(error);
   if (status !== null) tags.http_status = String(status);
   if (typeof candidate.code === "string" && /^[A-Z][A-Z0-9_]{0,31}$/.test(candidate.code)) {
     tags.error_code = candidate.code;
+  }
+  const providerReason = candidate.response?.data?.error?.errors?.[0]?.reason ?? candidate.errors?.[0]?.reason;
+  if (typeof providerReason === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(providerReason)) {
+    tags.provider_reason = providerReason;
+  }
+  const providerStatus = candidate.response?.data?.error?.status;
+  if (typeof providerStatus === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(providerStatus)) {
+    tags.provider_status = providerStatus;
   }
   return tags;
 }

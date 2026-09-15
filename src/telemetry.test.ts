@@ -52,7 +52,18 @@ test("the emitted Sentry envelope contains fixed diagnostics but no private sour
     release: "test-release",
   });
   configureErrorReportingSecrets(["wilma-password"]);
-  reportError(new Error("Student Name private message 123456 eero@example.com wilma-password"), {
+  const providerError = Object.assign(new Error("Student Name private message 123456 eero@example.com wilma-password"), {
+    response: {
+      status: 403,
+      data: {
+        error: {
+          status: "PERMISSION_DENIED",
+          errors: [{ reason: "accessNotConfigured", message: "Student Name private message" }],
+        },
+      },
+    },
+  });
+  reportError(providerError, {
     operation: "calendar.sync",
     tags: { route: "/calendar/sync" },
   });
@@ -62,7 +73,13 @@ test("the emitted Sentry envelope contains fixed diagnostics but no private sour
   for (const forbidden of ["Student Name", "private message", "123456", "eero@example.com", "wilma-password"]) {
     assert.equal(envelope.includes(forbidden), false, `must not contain ${forbidden}`);
   }
-  assert.match(envelope, /Unexpected application error/);
+  assert.match(envelope, /External service request rejected/);
   assert.match(envelope, /calendar\.sync/);
+  assert.match(envelope, /http_status/);
+  assert.match(envelope, /403/);
+  assert.match(envelope, /provider_reason/);
+  assert.match(envelope, /accessNotConfigured/);
+  assert.match(envelope, /provider_status/);
+  assert.match(envelope, /PERMISSION_DENIED/);
   assert.match(envelope, /test-release/);
 });
