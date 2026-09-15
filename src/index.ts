@@ -130,7 +130,7 @@ function home(): string {
 <h1>Family Wilma</h1>
 <div class="actions">
   <a class="button" href="/homework">Kotitehtävät</a>
-  <a class="button" href="/messages">Näytä viimeiset 30 päivää</a>
+  <a class="button" href="/messages">Viestit</a>
 </div>
 <p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`);
 }

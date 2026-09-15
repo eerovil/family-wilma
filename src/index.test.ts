@@ -139,7 +139,7 @@ test("health stays public while application pages require Google sign-in", async
     assert.equal(signedInHome.status, 200);
     const signedInHomeHtml = await signedInHome.text();
     assert.match(signedInHomeHtml, /href="\/homework">Kotitehtävät/);
-    assert.match(signedInHomeHtml, /href="\/messages">Näytä viimeiset 30 päivää/);
+    assert.match(signedInHomeHtml, /href="\/messages">Viestit/);
     assert.doesNotMatch(signedInHomeHtml, /calendar\/sync/);
     assert.match(signedInHomeHtml, /rel="manifest" href="\/manifest\.webmanifest"/);
     assert.match(signedInHomeHtml, /<script defer src="\/pwa\.js"><\/script>/);

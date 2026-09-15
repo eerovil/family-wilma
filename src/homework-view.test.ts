@@ -18,7 +18,7 @@ function homework(overrides: Partial<FetchedHomework>): FetchedHomework {
   };
 }
 
-test("homework view renders Peda.net first and one newest-first Wilma list", () => {
+test("homework view combines Peda.net and Wilma into one newest-first timeline", () => {
   const html = renderHomeworkContent({
     pedanet: [{
       date: "2026-09-15",
@@ -27,8 +27,8 @@ test("homework view renders Peda.net first and one newest-first Wilma list", () 
       sourceUrl: "https://example.test/homework",
       personalizationStatus: "unresolved",
     }, {
-      date: "2026-09-14",
-      heading: "ma 14.9.",
+      date: "2026-09-13",
+      heading: "su 13.9.",
       content: "Older Peda task",
       sourceUrl: "https://example.test/homework",
       personalizationStatus: "unresolved",
@@ -36,14 +36,15 @@ test("homework view renders Peda.net first and one newest-first Wilma list", () 
     pedanetSourceUrl: "https://example.test/homework",
     homework: [
       homework({ child: "Einari", date: "2026-09-15", homework: "Newest <task>" }),
-      homework({ child: "Valtteri", date: "2026-09-14", homework: "Older task" }),
+      homework({ child: "Valtteri", date: "2026-09-12", homework: "Oldest task" }),
     ],
   });
 
   assert.ok(html.indexOf("Einari · Peda.net") < html.indexOf("Newest &lt;task&gt;"));
-  assert.ok(html.indexOf("Newest &lt;task&gt;") < html.indexOf("Older task"));
+  assert.ok(html.indexOf("Newest &lt;task&gt;") < html.indexOf("Older Peda task"));
+  assert.ok(html.indexOf("Older Peda task") < html.indexOf("Oldest task"));
   assert.match(html, /A: s\. 18\nB: s\. 20/);
-  assert.ok(html.indexOf("ti 15.9.") < html.indexOf("ma 14.9."));
+  assert.ok(html.indexOf("ti 15.9.") < html.indexOf("su 13.9."));
   assert.match(HOMEWORK_VIEW_CSS, /overflow-wrap:anywhere/);
 });
 
