@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 import { loadConfig } from "./config.js";
-import { analysisIdentity, MessageAnalyzer } from "./analysis.js";
+import { analysisIdentities, analysisIdentity, MessageAnalyzer } from "./analysis.js";
 import { AnalyzeSyncJob, type AnalyzeSyncSnapshot } from "./analyze-sync.js";
 import { AnalysisBatchService, type AnalysisBatchAdapter } from "./batch-analysis.js";
 import { ManualAnalysisAdapter } from "./manual-analysis.js";
@@ -10,8 +10,8 @@ import { GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
 import { MESSAGE_CARD_CSS, renderMessageCard } from "./message-view.js";
-import { AnalysisStore, type CalendarItem } from "./store.js";
-import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
+import { AnalysisStore } from "./store.js";
+import { MfaCodeRequiredError, WilmaService, type FetchedMessage } from "./wilma.js";
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
 import { configureErrorReportingSecrets, flushErrorReporting, initializeErrorReporting, reportError } from "./telemetry.js";
 import { PedanetHomeworkService } from "./pedanet-homework.js";
@@ -19,6 +19,8 @@ import { HOMEWORK_VIEW_CSS, renderHomeworkContent } from "./homework-view.js";
 import { HomeworkCacheStore, homeworkCacheIdentity, wilmaCacheIdentity } from "./homework-cache.js";
 import { HomeworkRefreshJob, type HomeworkRefreshSnapshot } from "./homework-refresh.js";
 import { MessageCacheStore } from "./message-cache.js";
+import { groupMessages, type GroupedMessage } from "./message-group.js";
+import { messageCalendarProjection, type AnalyzedMessage } from "./message-calendar.js";
 import { THEME_COLOR } from "./pwa-content.js";
 import { pwaAsset } from "./pwa.js";
 
@@ -86,7 +88,7 @@ const messageLoad = new MessageLoadJob({
 const analyzeSync = new AnalyzeSyncJob({
   submit: (messages) => batches.submit(messages),
   refresh: () => batches.refresh(),
-  pending: (message) => store.hasPending(analysisIdentity(message)),
+  pending: (message) => analysisIdentities(message).some((identity) => store.hasPending(identity)),
   statuses: () => batches.statuses(),
   sync: async () => {
     const bundle = await wilma.fetchAll({
@@ -94,8 +96,10 @@ const analyzeSync = new AnalyzeSyncJob({
       includeLessons: true,
     });
     if (!bundle.lessonWindow) throw new Error("Lesson window was not returned");
+    const messageProjection = messageCalendarProjection(cachedMessages(groupMessages(bundle.messages)));
     return await calendar.sync({
-      sharedItems: [...bundle.structuredCalendarItems, ...messageCalendarItems(cachedMessages(bundle.messages))],
+      sharedItems: [...bundle.structuredCalendarItems, ...messageProjection.items],
+      sharedSupersededSourcePrefixes: messageProjection.supersededSourcePrefixes,
       lessonCalendars: bundle.lessonCalendars,
       lessonWindow: bundle.lessonWindow,
     });
@@ -103,12 +107,6 @@ const analyzeSync = new AnalyzeSyncJob({
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error) => reportError(error, { operation: "analysis_and_calendar.sync" }),
 });
-
-interface AnalyzedMessage {
-  message: FetchedMessage;
-  calendarItems: CalendarItem[];
-  hasOtherContent: boolean;
-}
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char);
@@ -227,7 +225,7 @@ function analyzeSyncStatus(snapshot: AnalyzeSyncSnapshot): { html: string; refre
   return { html: "", refresh: false };
 }
 
-function cachedMessages(messages: FetchedMessage[]): AnalyzedMessage[] {
+function cachedMessages(messages: GroupedMessage[]): AnalyzedMessage[] {
   return messages.flatMap((message) => {
     const analysis = analyzer.cached(message);
     return analysis ? [{ message, calendarItems: analysis.calendarItems, hasOtherContent: analysis.hasOtherContent }] : [];
@@ -250,10 +248,10 @@ function busyPage(message: string): string {
 }
 
 function messageCards(messages: FetchedMessage[]): string {
-  return messages.map((message) => renderMessageCard({
+  return groupMessages(messages).map((message) => renderMessageCard({
     message,
     analysis: analyzer.cached(message),
-    pending: store.hasPending(analysisIdentity(message)),
+    pending: analysisIdentities(message).some((identity) => store.hasPending(identity)),
   })).join("");
 }
 
@@ -323,17 +321,6 @@ function send(res: ServerResponse, status: number, html: string): void {
 function redirect(res: ServerResponse, location: string, status = 303): void {
   res.writeHead(status, { location, "cache-control": "no-store" });
   res.end();
-}
-
-function messageCalendarItems(analyzed: AnalyzedMessage[]): SourceCalendarItem[] {
-  return analyzed.flatMap(({ message, calendarItems }) => calendarItems.map((item, index) => ({
-    sourceId: `wilma-message:${message.accountId}:${message.studentNumber}:${message.messageId}:${index}`,
-    title: `${message.child}: ${item.title}`,
-    date: item.date,
-    time: item.time,
-    endDate: item.endDate,
-    description: item.description ?? `Wilma-viesti: ${message.subject}`,
-  })));
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -432,7 +419,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         return send(res, 409, messageLoadingPage(load));
       }
       if (!load.messages.length) return send(res, 409, messageLoadingPage(load));
-      if (!analyzeSync.start(load.messages)) {
+      if (!analyzeSync.start(groupMessages(load.messages))) {
         return send(res, 409, busyPage("Analysointi tai kalenterin synkronointi on jo käynnissä."));
       }
       return redirect(res, "/messages");

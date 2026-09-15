@@ -14,6 +14,7 @@ const MAX_RATE_LIMIT_RETRIES = 5;
 
 export interface CalendarSyncPlan {
   sharedItems: SourceCalendarItem[];
+  sharedSupersededSourcePrefixes?: string[];
   lessonCalendars: LessonCalendar[];
   lessonWindow: LessonWindow;
 }
@@ -98,7 +99,13 @@ export class GoogleCalendarService {
     const calendar = this.api(auth);
     const ids = await this.ensureCalendars(calendar, plan.lessonCalendars.map((entry) => entry.child));
     const totals = { created: 0, updated: 0, unchanged: 0, deleted: 0 };
-    addCounts(totals, await this.syncCalendar(calendar, ids.shared, plan.sharedItems));
+    addCounts(totals, await this.syncCalendar(
+      calendar,
+      ids.shared,
+      plan.sharedItems,
+      undefined,
+      plan.sharedSupersededSourcePrefixes,
+    ));
     for (const lessonCalendar of plan.lessonCalendars) {
       addCounts(totals, await this.syncCalendar(
         calendar,
@@ -184,30 +191,49 @@ export class GoogleCalendarService {
     calendarId: string,
     items: SourceCalendarItem[],
     reconcileWindow?: LessonWindow,
+    cleanupSourcePrefixes: string[] = [],
   ): Promise<{ created: number; updated: number; unchanged: number; deleted: number }> {
     const existing = await this.managedEvents(calendar, calendarId, reconcileWindow);
     const bySource = new Map(existing.map((event) => [event.extendedProperties?.private?.familyWilmaSourceId, event]));
     const desiredSources = new Set(items.map((item) => item.sourceId));
+    const supersededSourcePrefixes = new Set(cleanupSourcePrefixes);
     const counts = { created: 0, updated: 0, unchanged: 0, deleted: 0 };
+    const migratedIds = new Set<string>();
     await forEachConcurrent(items, 1, async (item) => {
       const desired = this.eventFor(item);
-      const event = bySource.get(item.sourceId);
+      const event = bySource.get(item.sourceId) ?? existing.find((candidate) => {
+        const sourceId = candidate.extendedProperties?.private?.familyWilmaSourceId;
+        return candidate.id && !migratedIds.has(candidate.id) && sourceId
+          && (item.supersededSourceIds ?? []).includes(sourceId);
+      });
       if (!event?.id) {
         await this.writeRequest(() => calendar.events.insert({ calendarId, requestBody: desired }));
         counts.created += 1;
-      } else if (this.sameEvent(event, desired)) {
+      } else if (event.extendedProperties?.private?.familyWilmaSourceId === item.sourceId && this.sameEvent(event, desired)) {
         counts.unchanged += 1;
       } else {
         const eventId = event.id;
         await this.writeRequest(() => calendar.events.update({ calendarId, eventId, requestBody: desired }));
+        migratedIds.add(eventId);
         counts.updated += 1;
       }
     });
+    const deletedIds = new Set<string>();
+    if (supersededSourcePrefixes.size) {
+      await forEachConcurrent(existing, 1, async (event) => {
+        const sourceId = event.extendedProperties?.private?.familyWilmaSourceId;
+        if (!event.id || migratedIds.has(event.id) || !sourceId || desiredSources.has(sourceId)
+            || ![...supersededSourcePrefixes].some((prefix) => sourceId.startsWith(prefix))) return;
+        await this.writeRequest(() => calendar.events.delete({ calendarId, eventId: event.id! }));
+        deletedIds.add(event.id);
+        counts.deleted += 1;
+      });
+    }
     if (reconcileWindow) {
       await forEachConcurrent(existing, 1, async (event) => {
         const sourceId = event.extendedProperties?.private?.familyWilmaSourceId;
         const date = eventLocalDate(event);
-        if (!event.id || !sourceId || desiredSources.has(sourceId) || !date || date < reconcileWindow.deleteFrom) return;
+        if (!event.id || deletedIds.has(event.id) || !sourceId || desiredSources.has(sourceId) || !date || date < reconcileWindow.deleteFrom) return;
         const eventId = event.id;
         await this.writeRequest(() => calendar.events.delete({ calendarId, eventId }));
         counts.deleted += 1;

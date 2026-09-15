@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "node:crypto";
-import { analysisIdentity, batchAnalysisRequest, MessageAnalyzer, parseAnalysis } from "./analysis.js";
+import { analysisIdentities, analysisIdentity, batchAnalysisRequest, MessageAnalyzer, parseAnalysis } from "./analysis.js";
 import { AnalysisStore, type AnalysisBatchStatus } from "./store.js";
 import type { FetchedMessage } from "./wilma.js";
 
@@ -26,7 +26,8 @@ export class AnalysisBatchService implements AnalysisBatchAdapter {
     const selected = messages.filter((message) => {
       const identity = analysisIdentity(message);
       const key = this.store.key(identity).key;
-      if (seen.has(key) || this.analyzer.cached(message) || this.store.hasPending(identity)) return false;
+      if (seen.has(key) || this.analyzer.cached(message)
+          || analysisIdentities(message).some((candidate) => this.store.hasPending(candidate))) return false;
       seen.add(key);
       return true;
     });

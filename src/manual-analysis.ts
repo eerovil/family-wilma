@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ANALYSIS_INSTRUCTIONS, analysisIdentity } from "./analysis.js";
+import { ANALYSIS_INSTRUCTIONS, analysisIdentities, analysisIdentity } from "./analysis.js";
 import type { AnalysisBatchAdapter } from "./batch-analysis.js";
 import { AnalysisStore, type AnalysisBatchStatus, type MessageAnalysis } from "./store.js";
 import type { FetchedMessage } from "./wilma.js";
@@ -84,7 +84,16 @@ export class ManualAnalysisAdapter implements AnalysisBatchAdapter {
     const selected = messages.filter((message) => {
       const identity = analysisIdentity(message);
       const key = this.store.key(identity).key;
-      if (seen.has(key) || this.store.get(identity) || this.store.hasPending(identity)) return false;
+      if (seen.has(key)) return false;
+      const identities = analysisIdentities(message);
+      for (const [index, candidate] of identities.entries()) {
+        const cached = this.store.get(candidate);
+        if (cached) {
+          if (index > 0) this.store.put(identities[0]!, cached);
+          return false;
+        }
+        if (this.store.hasPending(candidate)) return false;
+      }
       seen.add(key);
       return true;
     });

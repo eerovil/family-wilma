@@ -52,6 +52,9 @@ export interface AnalyzableMessage {
   sender: string;
   sentAt: Date;
   content: string;
+  analysisAliases?: AnalyzableMessage[];
+  logicalMessageId?: string;
+  logicalSentDate?: string;
 }
 
 function isDate(value: unknown): value is string {
@@ -86,6 +89,15 @@ export function parseAnalysis(value: unknown): MessageAnalysis {
 }
 
 export function analysisIdentity(message: AnalyzableMessage) {
+  if (message.logicalMessageId && message.logicalSentDate) {
+    return {
+      accountId: "logical-message",
+      studentNumber: message.logicalMessageId,
+      messageId: 0,
+      content: [message.logicalSentDate, message.subject, message.sender, message.content].join("\n\n"),
+      analyzerVersion: ANALYZER_VERSION,
+    };
+  }
   return {
     accountId: message.accountId,
     studentNumber: message.studentNumber,
@@ -93,6 +105,10 @@ export function analysisIdentity(message: AnalyzableMessage) {
     content: [message.subject, message.sender, message.sentAt.toISOString(), message.content].join("\n\n"),
     analyzerVersion: ANALYZER_VERSION,
   };
+}
+
+export function analysisIdentities(message: AnalyzableMessage) {
+  return [message, ...(message.analysisAliases ?? [])].map(analysisIdentity);
 }
 
 function prompt(message: AnalyzableMessage) {
@@ -131,12 +147,20 @@ export class MessageAnalyzer {
   }
 
   cached(message: AnalyzableMessage): MessageAnalysis | null {
-    return this.store.get(analysisIdentity(message));
+    const identities = analysisIdentities(message);
+    for (const [index, identity] of identities.entries()) {
+      const cached = this.store.get(identity);
+      if (cached) {
+        if (index > 0) this.store.put(identities[0]!, cached);
+        return cached;
+      }
+    }
+    return null;
   }
 
   async analyze(message: AnalyzableMessage): Promise<{ analysis: MessageAnalysis; cached: boolean }> {
     const cacheIdentity = analysisIdentity(message);
-    const cached = this.store.get(cacheIdentity);
+    const cached = this.cached(message);
     if (cached) return { analysis: cached, cached: true };
 
     if (!this.anthropic) throw new Error("Anthropic analysis is disabled");

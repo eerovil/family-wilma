@@ -33,6 +33,7 @@ export interface SourceCalendarItem {
   endTime?: string | null;
   endDate: string | null;
   description: string | null;
+  supersededSourceIds?: string[];
 }
 
 export interface LessonCalendar {

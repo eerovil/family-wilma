@@ -245,6 +245,96 @@ test("sync creates owned calendars, routes lessons separately, and removes stale
   }
 });
 
+test("shared message sync updates the canonical event and deletes duplicate child aliases", async () => {
+  const { calendar, dataDir } = service();
+  const updated: string[] = [];
+  const deleted: string[] = [];
+  const existing = [
+    {
+      id: "canonical",
+      summary: "Einari: Retki",
+      start: { date: "2026-09-20" },
+      end: { date: "2026-09-21" },
+      extendedProperties: { private: {
+        familyWilmaManagedBy: "family-wilma-v1",
+        familyWilmaSourceId: "wilma-message:school:101:7:0",
+      } },
+    },
+    {
+      id: "duplicate",
+      summary: "Valtteri: Retki",
+      start: { date: "2026-09-20" },
+      end: { date: "2026-09-21" },
+      extendedProperties: { private: {
+        familyWilmaManagedBy: "family-wilma-v1",
+        familyWilmaSourceId: "wilma-message:school:202:19:0",
+      } },
+    },
+  ];
+  const fakeApi = {
+    events: {
+      list: async () => ({ data: { items: existing } }),
+      insert: async () => { throw new Error("unexpected insert"); },
+      update: async ({ eventId }: { eventId: string }) => { updated.push(eventId); },
+      delete: async ({ eventId }: { eventId: string }) => { deleted.push(eventId); },
+    },
+  };
+
+  try {
+    const result = await (calendar as unknown as {
+      syncCalendar(api: unknown, calendarId: string, items: SourceCalendarItem[], window: undefined, prefixes: string[]): Promise<{
+        created: number; updated: number; unchanged: number; deleted: number;
+      }>;
+    }).syncCalendar(fakeApi, "shared", [{
+      sourceId: "wilma-message-group:logical:0",
+      supersededSourceIds: ["wilma-message:school:101:7:0", "wilma-message:school:202:19:0"],
+      title: "Einari & Valtteri: Retki",
+      date: "2026-09-20",
+      time: null,
+      endDate: null,
+      description: null,
+    }], undefined, ["wilma-message:school:101:7:", "wilma-message:school:202:19:"]);
+
+    assert.deepEqual(updated, ["canonical"]);
+    assert.deepEqual(deleted, ["duplicate"]);
+    assert.deepEqual(result, { created: 0, updated: 1, unchanged: 0, deleted: 1 });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("shared message cleanup runs even when analysis now has no calendar items", async () => {
+  const { calendar, dataDir } = service();
+  const deleted: string[] = [];
+  const fakeApi = {
+    events: {
+      list: async () => ({ data: { items: [{
+        id: "obsolete",
+        extendedProperties: { private: {
+          familyWilmaManagedBy: "family-wilma-v1",
+          familyWilmaSourceId: "wilma-message:school:202:19:0",
+        } },
+      }] } }),
+      insert: async () => { throw new Error("unexpected insert"); },
+      update: async () => { throw new Error("unexpected update"); },
+      delete: async ({ eventId }: { eventId: string }) => { deleted.push(eventId); },
+    },
+  };
+
+  try {
+    const result = await (calendar as unknown as {
+      syncCalendar(api: unknown, calendarId: string, items: SourceCalendarItem[], window: undefined, prefixes: string[]): Promise<{
+        created: number; updated: number; unchanged: number; deleted: number;
+      }>;
+    }).syncCalendar(fakeApi, "shared", [], undefined, ["wilma-message:school:202:19:"]);
+
+    assert.deepEqual(deleted, ["obsolete"]);
+    assert.deepEqual(result, { created: 0, updated: 0, unchanged: 0, deleted: 1 });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("calendar writes are paced and retry only explicit rate-limit rejections", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "family-wilma-google-rate-limit-"));
   const config: AppConfig = {

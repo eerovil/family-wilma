@@ -29,7 +29,10 @@ The latest successful 30-day message snapshot is stored in the private SQLite da
 immediately after restarts. Opening the message list refreshes it in the background only when it
 is at least 15 minutes old; **Päivitä viestit** bypasses that window. Message loading never starts
 AI analysis, and repeated requests reuse the running fetch. Messages older than 30 days are not
-downloaded by this view. There is no multi-household tenancy, Redis, or external worker.
+downloaded by this view. Messages with exactly the same sender, subject, and body on the same
+Helsinki calendar date are shown once with every affected child. That logical message is also
+analyzed only once, and its shared calendar entries carry all affected child names. There is no
+multi-household tenancy, Redis, or external worker.
 
 ## Requirements
 
@@ -90,16 +93,17 @@ If Wilma asks for MFA, the request pauses with an MFA form. The submitted one-ti
 Set `ANTHROPIC_API_KEY`. The Sonnet model is intentionally a code constant in `src/analysis.ts`, not an environment override.
 
 Analysis is always explicit. Press **Analysoi kaikki ja synkkaa kalenteri** on the message view.
-Family Wilma submits every currently displayed, uncached 30-day message through Anthropic's Message Batches API, whose
+Family Wilma submits every currently displayed, uncached logical 30-day message through Anthropic's Message Batches API, whose
 requests are priced at 50% of the normal API rates. A batch runs asynchronously and can take up
 to 24 hours; its persisted status is refreshed when the message page is opened. Calendar sync
 starts only after those message analyses have reached a terminal state. Opening or refreshing the
 page never submits analysis requests.
 
-Each result is cached in SQLite by account + student + message id + SHA-256 of relevant message
-content + analyzer version. An unchanged or already-pending message is therefore not submitted
-again. Batch bookkeeping stores these identities and provider request ids, but not Wilma message
-bodies.
+Each logical result is cached in SQLite by the exact sender, subject, body, Helsinki date, and
+analyzer version. Existing per-child cache entries are reused and promoted when matching messages
+are first merged, so this change does not trigger a second analysis charge. An unchanged or
+already-pending logical message is not submitted again. Batch bookkeeping stores these identities
+and provider request ids, but not Wilma message bodies.
 
 For agent-operated local development, set `ANALYSIS_MODE=manual` and leave
 `ANTHROPIC_API_KEY` empty. The same all-message button then writes a private request under
