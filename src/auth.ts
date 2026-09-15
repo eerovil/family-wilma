@@ -8,6 +8,9 @@ const OAUTH_STATE_MAX_AGE_SECONDS = 10 * 60;
 const SESSION_COOKIE = "family_wilma_session";
 const OAUTH_STATE_COOKIE = "family_wilma_oauth_state";
 
+export type OAuthPurpose = "login" | "calendar";
+export interface OAuthState { returnTo: string; purpose: OAuthPurpose }
+
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -32,6 +35,7 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS oauth_states (
         state_hash TEXT PRIMARY KEY,
         return_to TEXT NOT NULL,
+        purpose TEXT NOT NULL DEFAULT 'invalid',
         expires_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS user_sessions (
@@ -41,33 +45,41 @@ export class SessionStore {
         last_seen_at INTEGER NOT NULL
       );
     `);
+    this.addColumnIfMissing("oauth_states", "purpose", "TEXT NOT NULL DEFAULT 'invalid'");
+    this.addColumnIfMissing("user_sessions", "email", "TEXT");
   }
 
-  createOAuthState(returnTo: string | null): string {
+  private addColumnIfMissing(table: string, column: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((entry) => entry.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+
+  createOAuthState(returnTo: string | null, purpose: OAuthPurpose = "login"): string {
     const state = randomBytes(32).toString("base64url");
     const now = this.now();
     this.db.prepare("DELETE FROM oauth_states WHERE expires_at <= ?").run(now);
-    this.db.prepare("INSERT INTO oauth_states (state_hash, return_to, expires_at) VALUES (?, ?, ?)")
-      .run(hash(state), safeReturnPath(returnTo), now + OAUTH_STATE_MAX_AGE_SECONDS);
+    this.db.prepare("INSERT INTO oauth_states (state_hash, return_to, purpose, expires_at) VALUES (?, ?, ?, ?)")
+      .run(hash(state), safeReturnPath(returnTo), purpose, now + OAUTH_STATE_MAX_AGE_SECONDS);
     return state;
   }
 
-  consumeOAuthState(state: string): string | null {
+  consumeOAuthState(state: string): OAuthState | null {
     if (!state) return null;
     const row = this.db.prepare(
-      "DELETE FROM oauth_states WHERE state_hash = ? AND expires_at > ? RETURNING return_to",
-    ).get(hash(state), this.now()) as { return_to: string } | undefined;
-    return row?.return_to ?? null;
+      "DELETE FROM oauth_states WHERE state_hash = ? AND expires_at > ? RETURNING return_to, purpose",
+    ).get(hash(state), this.now()) as { return_to: string; purpose: string } | undefined;
+    if (!row || (row.purpose !== "login" && row.purpose !== "calendar")) return null;
+    return { returnTo: row.return_to, purpose: row.purpose };
   }
 
-  createSession(): string {
+  createSession(email: string): string {
     const token = randomBytes(32).toString("base64url");
     const now = this.now();
     this.db.prepare("DELETE FROM user_sessions WHERE expires_at <= ?").run(now);
     this.db.prepare(`
-      INSERT INTO user_sessions (token_hash, expires_at, created_at, last_seen_at)
-      VALUES (?, ?, ?, ?)
-    `).run(hash(token), now + SESSION_MAX_AGE_SECONDS, now, now);
+      INSERT INTO user_sessions (token_hash, expires_at, created_at, last_seen_at, email)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(hash(token), now + SESSION_MAX_AGE_SECONDS, now, now, email.trim().toLowerCase());
     return token;
   }
 
@@ -76,15 +88,23 @@ export class SessionStore {
     const now = this.now();
     const tokenHash = hash(token);
     const row = this.db.prepare(
-      "SELECT 1 AS present FROM user_sessions WHERE token_hash = ? AND expires_at > ?",
-    ).get(tokenHash, now) as { present: number } | undefined;
-    if (!row) {
+      "SELECT email FROM user_sessions WHERE token_hash = ? AND expires_at > ?",
+    ).get(tokenHash, now) as { email: string | null } | undefined;
+    if (!row?.email) {
       this.db.prepare("DELETE FROM user_sessions WHERE token_hash = ?").run(tokenHash);
       return false;
     }
     this.db.prepare("UPDATE user_sessions SET expires_at = ?, last_seen_at = ? WHERE token_hash = ?")
       .run(now + SESSION_MAX_AGE_SECONDS, now, tokenHash);
     return true;
+  }
+
+  sessionEmail(token: string | null): string | null {
+    if (!token) return null;
+    const row = this.db.prepare(
+      "SELECT email FROM user_sessions WHERE token_hash = ? AND expires_at > ?",
+    ).get(hash(token), this.now()) as { email: string | null } | undefined;
+    return row?.email ?? null;
   }
 
   destroySession(token: string | null): void {

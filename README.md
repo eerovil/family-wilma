@@ -146,6 +146,7 @@ Set:
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 GOOGLE_ALLOWED_EMAIL=you@example.com
+GOOGLE_ALLOWED_LOGIN_EMAILS=you@example.com,partner@example.com
 APP_BASE_URL=https://family-wilma.example.com
 ```
 
@@ -154,14 +155,16 @@ Optional server-side error reporting uses `SENTRY_DSN`, with
 fixed error categories, stack frames, safe status/code metadata, and fixed operation tags: request data, cookies, user identity,
 breadcrumbs, local variables, and performance traces are disabled.
 
-Google OAuth signs into the app and grants permission to create and manage calendars owned by
-Family Wilma in the same consent flow. It does not grant access to unrelated calendars. Only
-`GOOGLE_ALLOWED_EMAIL` may sign in. Sessions are revocable, stored as hashed opaque tokens
-in SQLite, and remain valid for one year after their most recent use. Sign out from
-**Asetukset**.
+Normal Google sign-in requests identity only. `GOOGLE_ALLOWED_EMAIL` is the Calendar owner;
+`GOOGLE_ALLOWED_LOGIN_EMAILS` is the comma-separated household allowlist and must include that
+owner. The owner separately grants permission to create/manage Family Wilma calendars and their
+sharing rules. Calendar credentials remain bound to the owner even when another household member
+signs in or starts a sync. Additional allowed members receive read-only access to every managed
+calendar. Sessions are revocable, stored as hashed opaque tokens in SQLite, and remain valid for
+one year after their most recent use. Sign out from **Asetukset**.
 
-After upgrading from the earlier single-calendar version, reconnect Google Calendar once so
-Google can grant the narrower managed-calendar permission.
+After enabling household sharing, reconnect Google Calendar once so Google can grant both the
+managed-calendar and calendar-sharing permissions.
 
 The first sync creates **Family Wilma – yhteiset** and one **[Child] – Lukujärjestys**
 calendar for every discovered child. Their ids are remembered locally. Family Wilma puts a

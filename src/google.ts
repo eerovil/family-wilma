@@ -3,12 +3,14 @@ import { join } from "node:path";
 import { calendar as calendarApi, calendar_v3 } from "@googleapis/calendar";
 import { OAuth2Client } from "google-auth-library";
 import type { AppConfig } from "./config.js";
+import type { OAuthPurpose } from "./auth.js";
 import type { LessonCalendar, LessonWindow, SourceCalendarItem } from "./wilma.js";
 
 const MANAGED_BY = "family-wilma-v1";
 const HELSINKI_TIME_ZONE = "Europe/Helsinki";
 const APP_CREATED_SCOPE = "https://www.googleapis.com/auth/calendar.app.created";
-const SCOPE_MARKER = "calendar.app.created";
+const ACL_SCOPE = "https://www.googleapis.com/auth/calendar.acls";
+const SCOPE_MARKER = "calendar.app.created+calendar.acls";
 const WRITE_INTERVAL_MS = 250;
 const MAX_RATE_LIMIT_RETRIES = 5;
 
@@ -50,12 +52,12 @@ export class GoogleCalendarService {
     this.calendarMapPath = join(config.dataDir, "google-calendar-map.json");
   }
 
-  authUrl(state: string): string {
+  authUrl(state: string, purpose: OAuthPurpose = "calendar"): string {
     return this.oauth().generateAuthUrl({
       access_type: "offline",
-      prompt: "consent",
+      ...(purpose === "calendar" ? { prompt: "consent" } : {}),
       state,
-      scope: ["openid", "email", APP_CREATED_SCOPE],
+      scope: purpose === "calendar" ? ["openid", "email", APP_CREATED_SCOPE, ACL_SCOPE] : ["openid", "email"],
     });
   }
 
@@ -63,20 +65,22 @@ export class GoogleCalendarService {
     return this.loadToken()?.family_wilma_calendar_scope === SCOPE_MARKER;
   }
 
-  async handleCallback(code: string): Promise<string> {
+  async handleCallback(code: string, purpose: OAuthPurpose = "calendar"): Promise<string> {
     const client = this.oauth();
     const { tokens } = await client.getToken(code);
     if (!tokens.id_token) throw new Error("Google did not return an ID token");
-    if (!tokens.access_token) throw new Error("Google did not return an access token");
-    const tokenInfo = await client.getTokenInfo(tokens.access_token);
-    if (!tokenInfo.scopes.includes(APP_CREATED_SCOPE)) {
-      throw new Error("Google Calendar permission was not granted");
-    }
     const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: this.config.googleClientId });
     const payload = ticket.getPayload();
     const email = payload?.email?.toLowerCase();
-    if (!payload || !email || payload.email_verified !== true || email !== this.config.googleAllowedEmail) {
+    if (!payload || !email || payload.email_verified !== true || !this.config.googleAllowedLoginEmails.includes(email)) {
       throw new UnauthorizedGoogleAccountError();
+    }
+    if (purpose === "login") return email;
+    if (email !== this.config.googleAllowedEmail) throw new UnauthorizedGoogleAccountError();
+    if (!tokens.access_token) throw new Error("Google did not return an access token");
+    const tokenInfo = await client.getTokenInfo(tokens.access_token);
+    if (!tokenInfo.scopes.includes(APP_CREATED_SCOPE) || !tokenInfo.scopes.includes(ACL_SCOPE)) {
+      throw new Error("Google Calendar permission was not granted");
     }
     const previous = this.loadToken();
     if (previous?.family_wilma_calendar_scope !== SCOPE_MARKER && !tokens.refresh_token) {
@@ -98,6 +102,7 @@ export class GoogleCalendarService {
     });
     const calendar = this.api(auth);
     const ids = await this.ensureCalendars(calendar, plan.lessonCalendars.map((entry) => entry.child));
+    await this.ensureCalendarSharing(calendar, [ids.shared, ...Object.values(ids.lessons)]);
     const totals = { created: 0, updated: 0, unchanged: 0, deleted: 0 };
     addCounts(totals, await this.syncCalendar(
       calendar,
@@ -151,6 +156,43 @@ export class GoogleCalendarService {
     } catch (error) {
       if (httpStatus(error) === 404) return false;
       throw error;
+    }
+  }
+
+  private async ensureCalendarSharing(calendar: CalendarApi, calendarIds: string[]): Promise<void> {
+    const recipients = this.config.googleAllowedLoginEmails.filter((email) => email !== this.config.googleAllowedEmail);
+    if (!recipients.length) return;
+    for (const calendarId of [...new Set(calendarIds)]) {
+      const rules: calendar_v3.Schema$AclRule[] = [];
+      let pageToken: string | undefined;
+      do {
+        const response = await this.request(() => calendar.acl.list({
+          calendarId,
+          maxResults: 250,
+          ...(pageToken ? { pageToken } : {}),
+        }));
+        rules.push(...(response.data.items ?? []));
+        pageToken = response.data.nextPageToken ?? undefined;
+      } while (pageToken);
+      for (const email of recipients) {
+        const existing = rules.find((rule) =>
+          rule.scope?.type === "user" && rule.scope.value?.toLowerCase() === email,
+        );
+        if (existing?.role === "reader" || existing?.role === "writer" || existing?.role === "owner") continue;
+        if (existing?.id) {
+          await this.writeRequest(() => calendar.acl.update({
+            calendarId,
+            ruleId: existing.id!,
+            requestBody: { role: "reader", scope: { type: "user", value: email } },
+          }));
+        } else {
+          await this.writeRequest(() => calendar.acl.insert({
+            calendarId,
+            sendNotifications: true,
+            requestBody: { role: "reader", scope: { type: "user", value: email } },
+          }));
+        }
+      }
     }
   }
 

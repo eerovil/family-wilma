@@ -122,10 +122,12 @@ function layout(title: string, body: string, head = ""): string {
   </style><style>${HOMEWORK_VIEW_CSS}</style></head><body><main class="wrap">${body}</main><script defer src="/pwa.js"></script></body></html>`;
 }
 
-function home(): string {
+function home(email: string): string {
   const google = calendar.isConnected()
     ? '<span class="muted">Google Calendar yhdistetty</span>'
-    : '<a class="toplink" href="/oauth/google/start">Yhdistä Google Calendar</a>';
+    : email === config.googleAllowedEmail
+      ? '<a class="toplink" href="/oauth/google/calendar/start">Yhdistä Google Calendar</a>'
+      : '<span class="muted">Kalenterin omistajan pitää yhdistää Google Calendar.</span>';
   return layout("Family Wilma", `
 <h1>Family Wilma</h1>
 <div class="actions">
@@ -309,7 +311,12 @@ function mfaPage(accountId: string, returnTo: string, returnMethod: "GET" | "POS
 
 function setupPage(email: string): string {
   const accounts = config.wilmaAccounts.map((account) => `<div class="card"><strong>${escapeHtml(account.id)}</strong><div class="muted">${escapeHtml(account.baseUrl)} · ${escapeHtml(account.username)}</div><p>Kaikki Wilman profiilit otetaan mukaan automaattisesti.</p>${account.profiles.length ? `<div class="muted">Nimien korvaukset:</div><ul>${account.profiles.map((profile) => `<li>${escapeHtml(profile.studentNumber)} → ${escapeHtml(profile.child)}</li>`).join("")}</ul>` : ""}<a class="toplink" href="/setup/discover?account=${encodeURIComponent(account.id)}">Näytä löydetyt Wilma-profiilit</a></div>`).join("");
-  return layout("Asetukset", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Asetukset</h1><h2>Wilma-tilit</h2>${accounts || '<p class="error">WILMA_ACCOUNTS_JSON ei sisällä tilejä.</p>'}<h2>Google</h2><p>${calendar.isConnected() ? "Google Calendar on yhdistetty." : '<a class="toplink" href="/oauth/google/start">Yhdistä Google Calendar</a>'}</p><p class="muted">Kirjautunut: ${escapeHtml(email)}</p><form method="post" action="/logout"><button class="secondary" type="submit">Kirjaudu ulos</button></form>`);
+  const calendarStatus = calendar.isConnected()
+    ? "Google Calendar on yhdistetty."
+    : email === config.googleAllowedEmail
+      ? '<a class="toplink" href="/oauth/google/calendar/start?returnTo=%2Fsetup">Yhdistä Google Calendar</a>'
+      : "Kalenterin omistajan pitää yhdistää Google Calendar.";
+  return layout("Asetukset", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Asetukset</h1><h2>Wilma-tilit</h2>${accounts || '<p class="error">WILMA_ACCOUNTS_JSON ei sisällä tilejä.</p>'}<h2>Google</h2><p>${calendarStatus}</p><p class="muted">Kirjautunut: ${escapeHtml(email)}</p><form method="post" action="/logout"><button class="secondary" type="submit">Kirjaudu ulos</button></form>`);
 }
 
 async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
@@ -345,9 +352,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
     if (req.method === "GET" && url.pathname === "/oauth/google/start") {
-      const state = sessions.createOAuthState(url.searchParams.get("returnTo"));
+      const state = sessions.createOAuthState(url.searchParams.get("returnTo"), "login");
       res.setHeader("set-cookie", oauthStateCookie(state, secureCookies));
-      return redirect(res, calendar.authUrl(state));
+      return redirect(res, calendar.authUrl(state, "login"));
     }
     if (req.method === "GET" && url.pathname === "/oauth/google/callback") {
       const code = url.searchParams.get("code");
@@ -357,12 +364,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (!browserState || browserState !== state) {
         return send(res, 400, layout("Google OAuth", '<div class="error">Google-kirjautumisen vahvistus epäonnistui.</div>'));
       }
-      const returnTo = sessions.consumeOAuthState(state);
-      if (!code || !returnTo) return send(res, 400, layout("Google OAuth", '<div class="error">Google-kirjautumisen vahvistus epäonnistui.</div>'));
-      const email = await calendar.handleCallback(code);
-      const token = sessions.createSession();
+      const oauthState = sessions.consumeOAuthState(state);
+      if (!code || !oauthState) return send(res, 400, layout("Google OAuth", '<div class="error">Google-kirjautumisen vahvistus epäonnistui.</div>'));
+      const email = await calendar.handleCallback(code, oauthState.purpose);
+      const token = sessions.createSession(email);
       res.setHeader("set-cookie", [clearOAuthStateCookie(secureCookies), sessionCookie(token, secureCookies)]);
-      return redirect(res, returnTo);
+      return redirect(res, oauthState.returnTo);
     }
 
     const token = sessionToken(req.headers.cookie, secureCookies);
@@ -371,9 +378,23 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const returnTo = req.method === "GET" ? `${url.pathname}${url.search}` : "/";
       return redirect(res, `/oauth/google/start?returnTo=${encodeURIComponent(returnTo)}`);
     }
+    const email = sessions.sessionEmail(token);
+    if (!email) {
+      res.setHeader("set-cookie", clearSessionCookie(secureCookies));
+      return redirect(res, `/oauth/google/start?returnTo=${encodeURIComponent(url.pathname)}`);
+    }
     if (token) res.setHeader("set-cookie", sessionCookie(token, secureCookies));
 
-    if (req.method === "GET" && url.pathname === "/") return send(res, 200, home());
+    if (req.method === "GET" && url.pathname === "/oauth/google/calendar/start") {
+      if (email !== config.googleAllowedEmail) {
+        return send(res, 403, layout("Google Calendar", '<div class="error">Vain kalenterin omistaja voi yhdistää Google Calendarin.</div>'));
+      }
+      const state = sessions.createOAuthState(url.searchParams.get("returnTo"), "calendar");
+      res.setHeader("set-cookie", oauthStateCookie(state, secureCookies));
+      return redirect(res, calendar.authUrl(state, "calendar"));
+    }
+
+    if (req.method === "GET" && url.pathname === "/") return send(res, 200, home(email));
     if (req.method === "GET" && url.pathname === "/homework") {
       homeworkRefresh.start({ force: false });
       return send(res, 200, homeworkPage(homeworkRefresh.snapshot()));
@@ -385,7 +406,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const runId = homeworkRefresh.start({ force: true });
       return redirect(res, `/homework?run=${encodeURIComponent(runId ?? "pending")}`);
     }
-    if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage(config.googleAllowedEmail));
+    if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage(email));
     if (req.method === "POST" && url.pathname === "/logout") {
       sessions.destroySession(token);
       res.setHeader("set-cookie", clearSessionCookie(secureCookies));
@@ -425,7 +446,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (!load.messages.length) return send(res, 409, messageLoadingPage(load));
       const messages = groupMessages(load.messages);
       if (messages.every((message) => Boolean(analyzer.cached(message)))) return redirect(res, "/messages");
-      if (!calendar.isConnected()) return redirect(res, "/oauth/google/start?returnTo=%2Fmessages");
+      if (!calendar.isConnected()) {
+        if (email !== config.googleAllowedEmail) {
+          return send(res, 409, busyPage("Kalenterin omistajan pitää yhdistää Google Calendar ennen synkronointia."));
+        }
+        return redirect(res, "/oauth/google/calendar/start?returnTo=%2Fmessages");
+      }
       if (!analyzeSync.start(messages)) {
         return send(res, 409, busyPage("Analysointi tai kalenterin synkronointi on jo käynnissä."));
       }
@@ -497,7 +523,7 @@ function otherWilmaOperationActive(): boolean {
 
 function knownRoute(pathname: string): string {
   return new Set([
-    "/", "/healthz", "/oauth/google/start", "/oauth/google/callback", "/setup",
+    "/", "/healthz", "/oauth/google/start", "/oauth/google/calendar/start", "/oauth/google/callback", "/setup",
     "/logout", "/homework", "/homework/refresh", "/messages", "/messages/refresh", "/messages/analyze", "/mfa",
     "/setup/discover",
   ]).has(pathname) ? pathname : "unknown";

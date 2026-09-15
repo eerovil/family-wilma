@@ -69,7 +69,7 @@ var PREFIX = "family-wilma-";
 var ASSETS = ${JSON.stringify(PUBLIC_PWA_PATHS)};
 var OFFLINE = "/offline";
 var GATEWAY_DOWN = [502, 503, 504];
-var NEVER_CACHE = ["/oauth/google/start", "/oauth/google/callback", "/sw.js", "/healthz"];
+var NEVER_CACHE = ["/oauth/google/start", "/oauth/google/calendar/start", "/oauth/google/callback", "/sw.js", "/healthz"];
 
 self.addEventListener("install", function (event) {
   event.waitUntil(caches.open(CACHE).then(function (cache) {

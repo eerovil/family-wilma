@@ -21,6 +21,7 @@ export interface AppConfig {
   googleClientId: string;
   googleClientSecret: string;
   googleAllowedEmail: string;
+  googleAllowedLoginEmails: string[];
   pedanetHomeworkUrl: string | null;
   pedanetHomeworkModuleId: string | null;
   wilmaAccounts: WilmaAccountConfig[];
@@ -91,6 +92,17 @@ export function loadConfig(): AppConfig {
       throw new Error("Manual analysis requires loopback HOST and APP_BASE_URL");
     }
   }
+  const googleAllowedEmail = required("GOOGLE_ALLOWED_EMAIL").toLowerCase();
+  const googleAllowedLoginEmails = (process.env.GOOGLE_ALLOWED_LOGIN_EMAILS?.trim() || googleAllowedEmail)
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+  if (new Set(googleAllowedLoginEmails).size !== googleAllowedLoginEmails.length) {
+    throw new Error("GOOGLE_ALLOWED_LOGIN_EMAILS must not contain duplicates");
+  }
+  if (!googleAllowedLoginEmails.includes(googleAllowedEmail)) {
+    throw new Error("GOOGLE_ALLOWED_LOGIN_EMAILS must include GOOGLE_ALLOWED_EMAIL");
+  }
   return {
     port,
     host,
@@ -100,7 +112,8 @@ export function loadConfig(): AppConfig {
     anthropicApiKey,
     googleClientId: required("GOOGLE_CLIENT_ID"),
     googleClientSecret: required("GOOGLE_CLIENT_SECRET"),
-    googleAllowedEmail: required("GOOGLE_ALLOWED_EMAIL").toLowerCase(),
+    googleAllowedEmail,
+    googleAllowedLoginEmails,
     pedanetHomeworkUrl: process.env.PEDANET_HOMEWORK_URL?.trim() || null,
     pedanetHomeworkModuleId: process.env.PEDANET_HOMEWORK_MODULE_ID?.trim() || null,
     wilmaAccounts: parseAccounts(),

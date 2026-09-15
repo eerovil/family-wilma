@@ -7,7 +7,7 @@ import type { AppConfig } from "./config.js";
 import { GoogleCalendarService, UnauthorizedGoogleAccountError } from "./google.js";
 import type { SourceCalendarItem } from "./wilma.js";
 
-function service() {
+function service(googleAllowedLoginEmails = ["eero@example.com"]) {
   const dataDir = mkdtempSync(join(tmpdir(), "family-wilma-google-"));
   const config: AppConfig = {
     pedanetHomeworkUrl: null,
@@ -21,6 +21,7 @@ function service() {
     googleClientId: "test",
     googleClientSecret: "test",
     googleAllowedEmail: "eero@example.com",
+    googleAllowedLoginEmails,
     wilmaAccounts: [],
   };
   return {
@@ -102,14 +103,14 @@ test("allowed Google sign-in preserves an existing refresh token", async () => {
     writeFileSync(tokenPath, JSON.stringify({
       refresh_token: "keep-me",
       access_token: "old",
-      family_wilma_calendar_scope: "calendar.app.created",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
     }));
     (calendar as unknown as { oauth: () => FakeOauthClient }).oauth = () => ({
       async getToken() {
         return { tokens: { id_token: "verified-id-token", access_token: "new" } };
       },
       async getTokenInfo() {
-        return { scopes: ["https://www.googleapis.com/auth/calendar.app.created"] };
+        return { scopes: ["https://www.googleapis.com/auth/calendar.app.created", "https://www.googleapis.com/auth/calendar.acls"] };
       },
       async verifyIdToken() {
         return { getPayload: () => ({ email: "EERO@EXAMPLE.COM", email_verified: true }) };
@@ -121,8 +122,62 @@ test("allowed Google sign-in preserves an existing refresh token", async () => {
       refresh_token: "keep-me",
       access_token: "new",
       id_token: "verified-id-token",
-      family_wilma_calendar_scope: "calendar.app.created",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
     });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an allowed household member can sign in without replacing owner Calendar credentials", async () => {
+  const { calendar, dataDir } = service(["eero@example.com", "anna@example.com"]);
+  try {
+    const tokenPath = join(dataDir, "google-oauth-token.json");
+    const original = JSON.stringify({ refresh_token: "owner-refresh", family_wilma_calendar_scope: "calendar.app.created+calendar.acls" });
+    writeFileSync(tokenPath, original);
+    (calendar as unknown as { oauth: () => FakeOauthClient }).oauth = () => ({
+      async getToken() { return { tokens: { id_token: "verified-id-token", access_token: "member-access" } }; },
+      async getTokenInfo() { throw new Error("login must not inspect Calendar scopes"); },
+      async verifyIdToken() {
+        return { getPayload: () => ({ email: "ANNA@EXAMPLE.COM", email_verified: true }) };
+      },
+    });
+
+    assert.equal(await calendar.handleCallback("code", "login"), "anna@example.com");
+    assert.equal(readFileSync(tokenPath, "utf8"), original);
+    await assert.rejects(calendar.handleCallback("code", "calendar"), UnauthorizedGoogleAccountError);
+    assert.equal(readFileSync(tokenPath, "utf8"), original);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("all managed calendars are shared with household members exactly once", async () => {
+  const { calendar, dataDir } = service(["eero@example.com", "anna@example.com"]);
+  const shared = new Set<string>();
+  const inserts: Array<{ calendarId: string; email: string; role: string }> = [];
+  const fakeApi = {
+    acl: {
+      list: async ({ calendarId }: { calendarId: string }) => ({ data: { items: shared.has(calendarId)
+        ? [{ id: `rule-${calendarId}`, role: "reader", scope: { type: "user", value: "ANNA@EXAMPLE.COM" } }]
+        : [] } }),
+      insert: async ({ calendarId, requestBody }: { calendarId: string; requestBody: { role: string; scope: { value: string } } }) => {
+        inserts.push({ calendarId, email: requestBody.scope.value, role: requestBody.role });
+        shared.add(calendarId);
+        return { data: {} };
+      },
+      update: async () => { throw new Error("unexpected ACL update"); },
+    },
+  };
+  try {
+    const internals = calendar as unknown as { ensureCalendarSharing(api: unknown, ids: string[]): Promise<void> };
+    await internals.ensureCalendarSharing(fakeApi, ["shared", "einari", "valtteri"]);
+    await internals.ensureCalendarSharing(fakeApi, ["shared", "einari", "valtteri"]);
+    assert.deepEqual(inserts, [
+      { calendarId: "shared", email: "anna@example.com", role: "reader" },
+      { calendarId: "einari", email: "anna@example.com", role: "reader" },
+      { calendarId: "valtteri", email: "anna@example.com", role: "reader" },
+    ]);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -205,7 +260,7 @@ test("sync creates owned calendars, routes lessons separately, and removes stale
   try {
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
-      family_wilma_calendar_scope: "calendar.app.created",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
     }));
     (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
       setCredentials() {},
@@ -349,6 +404,7 @@ test("calendar writes are paced and retry only explicit rate-limit rejections", 
     googleClientId: "test",
     googleClientSecret: "test",
     googleAllowedEmail: "eero@example.com",
+    googleAllowedLoginEmails: ["eero@example.com"],
     wilmaAccounts: [],
   };
   const sleeps: number[] = [];
@@ -381,7 +437,7 @@ test("calendar writes are paced and retry only explicit rate-limit rejections", 
   try {
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
-      family_wilma_calendar_scope: "calendar.app.created",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
     }));
     writeFileSync(join(dataDir, "google-calendar-map.json"), JSON.stringify({
       shared: "calendar", lessons: {}, provisioning: null,
@@ -428,7 +484,7 @@ test("sync fails closed on a corrupt calendar map", async () => {
   try {
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
-      family_wilma_calendar_scope: "calendar.app.created",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
     }));
     writeFileSync(join(dataDir, "google-calendar-map.json"), "{");
     (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
@@ -455,7 +511,7 @@ test("sync recreates confirmed deleted mapped calendars", async () => {
   try {
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
-      family_wilma_calendar_scope: "calendar.app.created",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
     }));
     writeFileSync(join(dataDir, "google-calendar-map.json"), JSON.stringify({
       shared: "deleted-shared",
@@ -504,7 +560,7 @@ test("an uncertain calendar creation is not retried automatically", async () => 
   try {
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
-      family_wilma_calendar_scope: "calendar.app.created",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
     }));
     (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
       setCredentials() {},
@@ -540,7 +596,7 @@ test("disallowed Google sign-in cannot overwrite Calendar credentials", async ()
         return { tokens: { id_token: "verified-id-token", access_token: "attacker" } };
       },
       async getTokenInfo() {
-        return { scopes: ["https://www.googleapis.com/auth/calendar.app.created"] };
+        return { scopes: ["https://www.googleapis.com/auth/calendar.app.created", "https://www.googleapis.com/auth/calendar.acls"] };
       },
       async verifyIdToken() {
         return { getPayload: () => ({ email: "attacker@example.com", email_verified: true }) };

@@ -53,6 +53,7 @@ test("health stays public while application pages require Google sign-in", async
       GOOGLE_CLIENT_ID: "test-client",
       GOOGLE_CLIENT_SECRET: "test-secret",
       GOOGLE_ALLOWED_EMAIL: "owner@example.com",
+      GOOGLE_ALLOWED_LOGIN_EMAILS: "owner@example.com,member@example.com",
       WILMA_ACCOUNTS_JSON: "[]",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -94,6 +95,7 @@ test("health stays public while application pages require Google sign-in", async
       ["GET", "/homework"],
       ["GET", "/messages"],
       ["GET", "/setup"],
+      ["GET", "/oauth/google/calendar/start"],
       ["GET", "/setup/discover?account=school"],
       ["POST", "/homework/refresh"],
       ["POST", "/messages/refresh"],
@@ -113,7 +115,7 @@ test("health stays public while application pages require Google sign-in", async
     assert.equal(googleUrl.hostname, "accounts.google.com");
     assert.ok(googleUrl.searchParams.get("state"));
     assert.match(googleUrl.searchParams.get("scope") ?? "", /openid/);
-    assert.match(googleUrl.searchParams.get("scope") ?? "", /calendar\.app\.created/);
+    assert.doesNotMatch(googleUrl.searchParams.get("scope") ?? "", /calendar\.app\.created/);
 
     const invalidCallback = await fetch(`http://127.0.0.1:${port}/oauth/google/callback?code=fake`, { redirect: "manual" });
     assert.equal(invalidCallback.status, 400);
@@ -122,9 +124,9 @@ test("health stays public while application pages require Google sign-in", async
     const now = Math.floor(Date.now() / 1000);
     const db = new DatabaseSync(join(dataDir, "family-wilma.sqlite"));
     db.prepare(`
-      INSERT INTO user_sessions (token_hash, expires_at, created_at, last_seen_at)
-      VALUES (?, ?, ?, ?)
-    `).run(createHash("sha256").update(token).digest("hex"), now + 3600, now, now);
+      INSERT INTO user_sessions (token_hash, expires_at, created_at, last_seen_at, email)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(createHash("sha256").update(token).digest("hex"), now + 3600, now, now, "owner@example.com");
     db.close();
 
     const signedIn = await fetch(`http://127.0.0.1:${port}/setup`, {
@@ -132,6 +134,15 @@ test("health stays public while application pages require Google sign-in", async
     });
     assert.equal(signedIn.status, 200);
     assert.match(await signedIn.text(), /Kirjaudu ulos/);
+
+    const calendarStart = await fetch(`http://127.0.0.1:${port}/oauth/google/calendar/start?returnTo=%2Fsetup`, {
+      headers: { cookie: `family_wilma_session=${token}` },
+      redirect: "manual",
+    });
+    assert.equal(calendarStart.status, 303);
+    const calendarGoogleUrl = new URL(calendarStart.headers.get("location") ?? "");
+    assert.match(calendarGoogleUrl.searchParams.get("scope") ?? "", /calendar\.app\.created/);
+    assert.match(calendarGoogleUrl.searchParams.get("scope") ?? "", /calendar\.acls/);
 
     const signedInHome = await fetch(`http://127.0.0.1:${port}/`, {
       headers: { cookie: `family_wilma_session=${token}` },

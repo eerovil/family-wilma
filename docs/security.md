@@ -61,9 +61,12 @@ the device's offline page cache. Clear the site's stored data before sharing or 
 
 ## Authentication and network boundary
 
-One deployment still serves one household, with no roles or admin panel. Every application page
-and action requires Google sign-in, and only the verified account configured in
-`GOOGLE_ALLOWED_EMAIL` may sign in. The public health endpoint contains no household data.
+One deployment still serves one household. Every application page and action requires Google
+sign-in, and only verified accounts in `GOOGLE_ALLOWED_LOGIN_EMAILS` may sign in.
+`GOOGLE_ALLOWED_EMAIL` is the sole Calendar owner: only that account can replace the stored
+Calendar credential. Other household members can start the same server-side sync and receive
+read-only access to the managed calendars, but their Google tokens are never persisted. The
+public health endpoint contains no household data.
 
 Sessions are random opaque values stored only as SHA-256 hashes in SQLite. They expire one year
 after their most recent use and can be revoked by signing out. In production, cookies are
