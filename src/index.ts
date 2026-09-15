@@ -243,11 +243,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       calendarSyncRunning = true;
       try {
         await batches.refresh().catch((error) => console.error(`analysis batch refresh failed: ${error instanceof Error ? error.name : "Error"}`));
-        const bundle = await wilma.fetchAll({ sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000) });
+        const bundle = await wilma.fetchAll({
+          sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000),
+          includeLessons: true,
+        });
+        if (!bundle.lessonWindow) throw new Error("Lesson window was not returned");
         const analyzed = cachedMessages(bundle.messages);
-        const items = [...bundle.structuredCalendarItems, ...messageCalendarItems(analyzed)];
-        const result = await calendar.sync(items);
-        return send(res, 200, layout("Kalenteri synkattu", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kalenteri synkattu</h1><div class="success">Luotu ${result.created}, päivitetty ${result.updated}, ennallaan ${result.unchanged}.</div>`));
+        const result = await calendar.sync({
+          sharedItems: [...bundle.structuredCalendarItems, ...messageCalendarItems(analyzed)],
+          lessonCalendars: bundle.lessonCalendars,
+          lessonWindow: bundle.lessonWindow,
+        });
+        return send(res, 200, layout("Kalenteri synkattu", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kalenteri synkattu</h1><div class="success">Luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}.</div>`));
       } finally {
         calendarSyncRunning = false;
       }

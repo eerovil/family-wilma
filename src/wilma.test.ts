@@ -159,3 +159,84 @@ test("recent fetch skips old message details before they are downloaded", async 
     WilmaClient.login = originalLogin;
   }
 });
+
+test("lesson sync reads each week for six months and groups valid lessons by displayed child", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  const scheduleDates: string[] = [];
+
+  WilmaClient.listStudents = async () => [
+    { studentNumber: "101", name: "Wilma Name", href: "/profiles/101" },
+  ];
+  WilmaClient.login = async () => ({
+    messages: { list: async () => [] },
+    exams: { list: async () => [] },
+    schedule: {
+      list: async ({ date }: { date?: string } = {}) => {
+        scheduleDates.push(date ?? "");
+        if (date === "2026-09-14") {
+          return [
+            {
+              date: "2026-09-15", dayOfWeek: 2, start: "08:15", end: "09:45",
+              subject: "Matematiikka", subjectCode: "MA", teacher: "Teacher", teacherCode: "TEA", groupId: 42,
+            },
+            {
+              date: "2026-09-15", dayOfWeek: 2, start: "10:15", end: "11:00",
+              subject: "Matematiikka", subjectCode: "MA", teacher: "Teacher", teacherCode: "TEA", groupId: 42,
+            },
+          ];
+        }
+        if (date === "2026-09-21") {
+          return [{
+            date: "2026-09-22", dayOfWeek: 2, start: "", end: "10:00",
+            subject: "Invalid", subjectCode: "BAD", teacher: "", teacherCode: "", groupId: 99,
+          }];
+        }
+        return [];
+      },
+    },
+  }) as unknown as WilmaClient;
+
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [{ studentNumber: "101", child: "Preferred Name" }],
+    }],
+  } as unknown as AppConfig;
+
+  try {
+    const bundle = await new WilmaService(config, () => new Date("2026-09-15T05:00:00Z"))
+      .fetchAll({ includeLessons: true });
+    assert.equal(scheduleDates[0], "2026-09-14");
+    assert.equal(scheduleDates.at(-1), "2027-03-15");
+    assert.equal(scheduleDates.length, 27);
+    assert.deepEqual(bundle.lessonWindow, { start: "2026-09-14", end: "2027-03-15", deleteFrom: "2026-09-15" });
+    assert.deepEqual(bundle.lessonCalendars, [{
+      child: "Preferred Name",
+      reconcile: false,
+      items: [{
+        sourceId: "wilma-lesson:2026-09-15:08:15:42",
+        title: "Matematiikka",
+        date: "2026-09-15",
+        time: "08:15",
+        endTime: "09:45",
+        endDate: null,
+        description: "Opettaja: Teacher (TEA)",
+      }, {
+        sourceId: "wilma-lesson:2026-09-15:10:15:42",
+        title: "Matematiikka",
+        date: "2026-09-15",
+        time: "10:15",
+        endTime: "11:00",
+        endDate: null,
+        description: "Opettaja: Teacher (TEA)",
+      }],
+    }]);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});

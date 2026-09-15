@@ -9,7 +9,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
-const emptyBundle = (): WilmaBundle => ({ messages: [], structuredCalendarItems: [] });
+const emptyBundle = (): WilmaBundle => ({ messages: [], structuredCalendarItems: [], lessonCalendars: [], lessonWindow: null });
 
 test("message loading fetches only and coalesces duplicate starts", async () => {
   const fetched = deferred<WilmaBundle>();

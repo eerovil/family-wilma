@@ -109,17 +109,24 @@ Set:
 ```text
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
-GOOGLE_CALENDAR_ID=primary
 GOOGLE_ALLOWED_EMAIL=you@example.com
 APP_BASE_URL=https://family-wilma.example.com
 ```
 
-Google OAuth signs into the app and grants Calendar access in the same consent flow. Only
+Google OAuth signs into the app and grants permission to create and manage calendars owned by
+Family Wilma in the same consent flow. It does not grant access to unrelated calendars. Only
 `GOOGLE_ALLOWED_EMAIL` may sign in. Sessions are revocable, stored as hashed opaque tokens
 in SQLite, and remain valid for one year after their most recent use. Sign out from
 **Asetukset**.
 
-Family Wilma puts a stable source id and `family-wilma-v1` ownership marker in each event's private `extendedProperties`. Repeated syncs update the existing managed event instead of creating duplicates, and events not created by Family Wilma are never modified.
+After upgrading from the earlier single-calendar version, reconnect Google Calendar once so
+Google can grant the narrower managed-calendar permission.
+
+The first sync creates **Family Wilma – yhteiset** and one **[Child] – Lukujärjestys**
+calendar for every discovered child. Their ids are remembered locally. Family Wilma puts a
+stable source id and `family-wilma-v1` ownership marker in each event's private
+`extendedProperties`. Repeated syncs update existing managed events instead of creating
+duplicates, and events not created by Family Wilma are never modified.
 
 ## Run locally
 
@@ -157,20 +164,25 @@ The named volume stores only:
 
 - `family-wilma.sqlite` — Sonnet analysis cache and batch status/mapping metadata
 - `google-oauth-token.json` — Google OAuth token, mode 0600
+- `google-calendar-map.json` — ids of the secondary calendars created by Family Wilma, mode 0600
 
 Wilma message bodies, grades, attendance, etc. are not archived locally.
 
 ## Calendar inputs
 
-V1 syncs two kinds of source data:
+V1 syncs three kinds of source data:
 
-1. structured Wilma exams from `wilma-client`
-2. calendar items Sonnet extracts from current Wilma messages
+1. six months of Wilma lessons into each child's **Lukujärjestys** calendar
+2. structured Wilma exams into **Family Wilma – yhteiset**
+3. calendar items Sonnet extracts from current Wilma messages into **Family Wilma – yhteiset**
 
-Each sync fetches fresh Wilma data from the last 30 days. It includes only Sonnet results that
-were previously requested explicitly and have reached the local cache. It does not analyze
-missing results. A one-time historical backfill is intentionally outside the v1 application
-workflow and can be handled manually.
+Each sync fetches lessons from the current week through six months ahead. Future managed lessons
+that have disappeared from Wilma are removed from the child calendar; other calendar events are
+untouched. Removal is skipped if Wilma returns no valid timetable or malformed lesson data, so
+an ambiguous upstream response cannot empty a child calendar. The shared calendar includes only Sonnet results that were previously requested
+explicitly and have reached the local cache. Sync never analyzes missing results. A one-time
+historical backfill is intentionally outside the v1 application workflow and can be handled
+manually.
 
 ## Privacy and logs
 

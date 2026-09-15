@@ -75,7 +75,7 @@ test("health stays public while application pages require Google sign-in", async
     assert.equal(googleUrl.hostname, "accounts.google.com");
     assert.ok(googleUrl.searchParams.get("state"));
     assert.match(googleUrl.searchParams.get("scope") ?? "", /openid/);
-    assert.match(googleUrl.searchParams.get("scope") ?? "", /calendar\.events/);
+    assert.match(googleUrl.searchParams.get("scope") ?? "", /calendar\.app\.created/);
 
     const invalidCallback = await fetch(`http://127.0.0.1:${port}/oauth/google/callback?code=fake`, { redirect: "manual" });
     assert.equal(invalidCallback.status, 400);

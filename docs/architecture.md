@@ -63,9 +63,9 @@ The analyzer needs a fixed output shape, so it should use structured outputs
 asking for JSON in the prompt and hoping. The exact schema is
 [an open question](open-questions.md).
 
-**Google Calendar.** OAuth against the household's own Google account, then write events. The
-hard part is not writing the event but writing it *once* — see
-[open questions](open-questions.md).
+**Google Calendar.** OAuth uses the narrow `calendar.app.created` scope. The calendar module
+creates one shared calendar plus one lesson calendar per displayed child, remembers their ids,
+routes events, and reconciles the six-month lesson window behind one sync interface.
 
 ## Deliberately left out
 

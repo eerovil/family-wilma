@@ -24,13 +24,28 @@ export interface SourceCalendarItem {
   title: string;
   date: string;
   time: string | null;
+  endTime?: string | null;
   endDate: string | null;
   description: string | null;
+}
+
+export interface LessonCalendar {
+  child: string;
+  items: SourceCalendarItem[];
+  reconcile: boolean;
+}
+
+export interface LessonWindow {
+  start: string;
+  end: string;
+  deleteFrom: string;
 }
 
 export interface WilmaBundle {
   messages: FetchedMessage[];
   structuredCalendarItems: SourceCalendarItem[];
+  lessonCalendars: LessonCalendar[];
+  lessonWindow: LessonWindow | null;
 }
 
 export class WilmaService {
@@ -38,7 +53,7 @@ export class WilmaService {
   private readonly pendingDiscoveries = new Map<string, Promise<StudentInfo[]>>();
   private readonly pendingClients = new Map<string, Promise<WilmaClient>>();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(private readonly config: AppConfig, private readonly now: () => Date = () => new Date()) {}
 
   submitMfaCode(accountId: string, code: string): void {
     if (!this.config.wilmaAccounts.some((account) => account.id === accountId)) {
@@ -54,9 +69,13 @@ export class WilmaService {
     return WilmaClient.listStudents(this.baseProfile(account), this.mfaCallback(account));
   }
 
-  async fetchAll(options: { sentAfter?: Date } = {}): Promise<WilmaBundle> {
+  async fetchAll(options: { sentAfter?: Date; includeLessons?: boolean } = {}): Promise<WilmaBundle> {
     const messages: FetchedMessage[] = [];
     const structuredCalendarItems: SourceCalendarItem[] = [];
+    const lessonItemsByChild = new Map<string, Map<string, SourceCalendarItem>>();
+    const lessonReconcileByChild = new Map<string, boolean>();
+    const lessonWindow = options.includeLessons ? sixMonthLessonWindow(this.now()) : null;
+    const scheduleDates = lessonWindow ? weeklyDates(lessonWindow.start, lessonWindow.end) : [];
     for (const account of this.config.wilmaAccounts) {
       const discovered = await this.profilesForFetch(account);
       const childOverrides = new Map(account.profiles.map((profile) => [profile.studentNumber, profile.child]));
@@ -96,13 +115,51 @@ export class WilmaService {
               .join("\n") || null,
           });
         }
+        if (lessonWindow) {
+          const childLessons = lessonItemsByChild.get(profile.child) ?? new Map<string, SourceCalendarItem>();
+          lessonItemsByChild.set(profile.child, childLessons);
+          if (!lessonReconcileByChild.has(profile.child)) lessonReconcileByChild.set(profile.child, true);
+          for (const date of scheduleDates) {
+            const lessons = await client.schedule.list({ date });
+            for (const lesson of lessons) {
+              if (!validLesson(lesson.date, lesson.start, lesson.end, lessonWindow)) {
+                lessonReconcileByChild.set(profile.child, false);
+                continue;
+              }
+              const stablePart = lesson.groupId
+                ? String(lesson.groupId)
+                : `${lesson.subjectCode || lesson.subject}:${lesson.start}`;
+              const sourceId = `wilma-lesson:${lesson.date}:${lesson.start}:${stablePart}`;
+              childLessons.set(sourceId, {
+                sourceId,
+                title: lesson.subject || lesson.subjectCode || "Oppitunti",
+                date: lesson.date,
+                time: lesson.start,
+                endTime: lesson.end,
+                endDate: null,
+                description: teacherDescription(lesson.teacher, lesson.teacherCode),
+              });
+            }
+          }
+        }
       }
     }
     messages.sort((a, b) => b.sentAt.getTime() - a.sentAt.getTime());
     this.pendingDiscoveries.clear();
     this.pendingClients.clear();
     this.mfaCodes.clear();
-    return { messages, structuredCalendarItems };
+    const lessonCalendars = [...lessonItemsByChild.entries()]
+      .sort(([left], [right]) => left.localeCompare(right, "fi"))
+      .map(([child, items]) => ({
+        child,
+        items: [...items.values()].sort((left, right) => left.date.localeCompare(right.date)
+          || (left.time ?? "").localeCompare(right.time ?? "")),
+        // The client currently reports an empty array both for a genuinely empty
+        // schedule and for an unrecognised Wilma response. Never turn that
+        // ambiguity into a destructive full-calendar reconciliation.
+        reconcile: items.size > 0 && lessonReconcileByChild.get(child) === true,
+      }));
+    return { messages, structuredCalendarItems, lessonCalendars, lessonWindow };
   }
 
   private async profilesForFetch(account: WilmaAccountConfig): Promise<StudentInfo[]> {
@@ -156,4 +213,63 @@ export class WilmaService {
       return code;
     };
   }
+}
+
+function sixMonthLessonWindow(now: Date): LessonWindow {
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Helsinki",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+  const todayDate = isoDate(today);
+  const day = todayDate.getUTCDay() || 7;
+  const start = addDays(todayDate, 1 - day);
+  const targetMonth = todayDate.getUTCMonth() + 6;
+  const targetYear = todayDate.getUTCFullYear() + Math.floor(targetMonth / 12);
+  const month = ((targetMonth % 12) + 12) % 12;
+  const lastDay = new Date(Date.UTC(targetYear, month + 1, 0)).getUTCDate();
+  const end = new Date(Date.UTC(targetYear, month, Math.min(todayDate.getUTCDate(), lastDay)));
+  return { start: dateString(start), end: dateString(end), deleteFrom: today };
+}
+
+function weeklyDates(start: string, end: string): string[] {
+  const dates: string[] = [];
+  for (let date = isoDate(start); date <= isoDate(end); date = addDays(date, 7)) dates.push(dateString(date));
+  return dates;
+}
+
+function isoDate(value: string): Date {
+  return new Date(`${value}T00:00:00Z`);
+}
+
+function addDays(value: Date, days: number): Date {
+  const result = new Date(value);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+}
+
+function dateString(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function validLesson(date: string, start: string, end: string, window: LessonWindow): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date)
+    && validTime(start)
+    && validTime(end)
+    && start < end
+    && date >= window.start
+    && date <= window.end;
+}
+
+function validTime(value: string): boolean {
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function teacherDescription(teacher: string, code: string): string | null {
+  const name = teacher.trim();
+  const short = code.trim();
+  if (name && short) return `Opettaja: ${name} (${short})`;
+  if (name || short) return `Opettaja: ${name || short}`;
+  return null;
 }
