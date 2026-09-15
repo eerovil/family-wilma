@@ -7,7 +7,8 @@ import { AnalysisBatchService } from "./batch-analysis.js";
 import { GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
-import { AnalysisStore, type CalendarItem, type MessageAnalysis } from "./store.js";
+import { MESSAGE_CARD_CSS, renderMessageCard } from "./message-view.js";
+import { AnalysisStore, type CalendarItem } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
 
@@ -40,7 +41,7 @@ function layout(title: string, body: string, head = ""): string {
   return `<!doctype html>
 <html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>${escapeHtml(title)}</title>${head}<style>
-:root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}.message-body{white-space:pre-wrap;line-height:1.45}.calendar{margin-top:12px;padding-top:10px;border-top:1px solid #e5e7eb}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
+:root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}${MESSAGE_CARD_CSS}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
 </style></head><body><main class="wrap">${body}</main></body></html>`;
 }
 
@@ -89,25 +90,12 @@ function selectionId(message: FetchedMessage): string {
 }
 
 function messageCards(messages: FetchedMessage[]): string {
-  return messages.map((message) => {
-    const analysis = analyzer.cached(message);
-    const pending = store.hasPending(analysisIdentity(message));
-    const calendarItems = analysis?.calendarItems ?? [];
-    const hasOtherContent = analysis?.hasOtherContent ?? false;
-    const items = calendarItems.length
-      ? `<div class="calendar"><strong>Kalenteriin:</strong>${calendarItems.map((item) => `<div>${escapeHtml(item.date)}${item.time ? ` ${escapeHtml(item.time)}` : ""} — ${escapeHtml(item.title)}</div>`).join("")}</div>`
-      : "";
-    const state = analysis ? "Analysoitu" : pending ? "Analyysi jonossa" : "Ei analysoitu";
-    const selection = analysis || pending
-      ? `<span class="muted">${state}</span>`
-      : `<label class="select"><input type="checkbox" name="message" value="${selectionId(message)}"> Valitse analysoitavaksi</label>`;
-    return `<article class="card${hasOtherContent ? " important" : ""}">
-<div><span class="pill">${escapeHtml(message.child)}</span>${hasOtherContent ? '<span class="pill">Sisältää muutakin tärkeää</span>' : ""}</div>
-<h2>${escapeHtml(message.subject)}</h2>
-<p class="muted">${escapeHtml(message.sender)} · ${escapeHtml(message.sentAt.toLocaleString("fi-FI", { timeZone: "Europe/Helsinki" }))} · ${state}</p>
-${selection}
-<div class="message-body">${escapeHtml(message.content)}</div>${items}</article>`;
-  }).join("");
+  return messages.map((message) => renderMessageCard({
+    message,
+    analysis: analyzer.cached(message),
+    pending: store.hasPending(analysisIdentity(message)),
+    selectionId: selectionId(message),
+  })).join("");
 }
 
 function hasSelectableMessages(messages: FetchedMessage[]): boolean {
