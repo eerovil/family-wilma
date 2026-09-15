@@ -1,22 +1,13 @@
-import type { MessageAnalysis } from "./store.js";
 import type { FetchedMessage, WilmaBundle } from "./wilma.js";
 
 const RECENT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
-export interface AnalyzedMessage {
-  message: FetchedMessage;
-  calendarItems: MessageAnalysis["calendarItems"];
-  hasOtherContent: boolean;
-  cached: boolean;
-}
-
 export interface MessageLoadSnapshot {
-  state: "idle" | "fetching" | "analyzing" | "mfa" | "ready" | "error";
+  state: "idle" | "fetching" | "mfa" | "ready" | "error";
   includeOlder: boolean;
-  completed: number;
-  total: number;
-  messages: AnalyzedMessage[];
+  messages: FetchedMessage[];
+  structuredCalendarItems: WilmaBundle["structuredCalendarItems"];
   error: string | null;
   mfaAccountId: string | null;
   queuedIncludeOlder: boolean;
@@ -24,7 +15,6 @@ export interface MessageLoadSnapshot {
 
 interface MessageLoadDependencies {
   fetch(options: { sentAfter?: Date }): Promise<WilmaBundle>;
-  analyze(message: FetchedMessage): Promise<{ analysis: MessageAnalysis; cached: boolean }>;
   mfaAccountId?(error: unknown): string | null;
   now?: () => Date;
 }
@@ -34,9 +24,8 @@ export class MessageLoadJob {
   private status: MessageLoadSnapshot = {
     state: "idle",
     includeOlder: false,
-    completed: 0,
-    total: 0,
     messages: [],
+    structuredCalendarItems: [],
     error: null,
     mfaAccountId: null,
     queuedIncludeOlder: false,
@@ -54,9 +43,8 @@ export class MessageLoadJob {
     this.status = {
       state: "fetching",
       includeOlder: options.includeOlder,
-      completed: 0,
-      total: 0,
       messages: [],
+      structuredCalendarItems: [],
       error: null,
       mfaAccountId: null,
       queuedIncludeOlder: false,
@@ -69,7 +57,11 @@ export class MessageLoadJob {
   }
 
   snapshot(): MessageLoadSnapshot {
-    return { ...this.status, messages: [...this.status.messages] };
+    return {
+      ...this.status,
+      messages: [...this.status.messages],
+      structuredCalendarItems: [...this.status.structuredCalendarItems],
+    };
   }
 
   async wait(): Promise<void> {
@@ -89,18 +81,12 @@ export class MessageLoadJob {
         ? {}
         : { sentAfter: new Date(now.getTime() - RECENT_DAYS * DAY_MS) };
       const bundle = await this.dependencies.fetch(fetchOptions);
-      this.status = { ...this.status, state: "analyzing", total: bundle.messages.length };
-      for (const message of bundle.messages) {
-        const analyzed = await this.dependencies.analyze(message);
-        this.status.messages.push({
-          message,
-          calendarItems: analyzed.analysis.calendarItems,
-          hasOtherContent: analyzed.analysis.hasOtherContent,
-          cached: analyzed.cached,
-        });
-        this.status.completed += 1;
-      }
-      this.status = { ...this.status, state: "ready" };
+      this.status = {
+        ...this.status,
+        state: "ready",
+        messages: bundle.messages,
+        structuredCalendarItems: bundle.structuredCalendarItems,
+      };
     } catch (error) {
       const mfaAccountId = this.dependencies.mfaAccountId?.(error) ?? null;
       if (mfaAccountId) {

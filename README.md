@@ -8,12 +8,12 @@ The normal daily-use screen intentionally has only two primary actions:
 - **Synkkaa kalenteriin**
 
 Recent messages load through one in-process background job so a large inbox cannot hold the
-browser request open. The page reports fetch/analysis progress and refreshes itself. Repeated
-clicks reuse the running job instead of starting duplicate Wilma or Anthropic requests.
+browser request open. Opening the message list only reads Wilma: it never starts AI analysis.
+Repeated clicks reuse the running fetch instead of starting duplicate Wilma requests.
 
-Messages older than 30 days are not downloaded or analyzed during normal use. After the recent
-view is ready, **Hae ja analysoi myös vanhemmat viestit** explicitly starts a background load of
-the whole inbox. There is no multi-household tenancy, Redis, external worker, or permanent
+Messages older than 30 days are not downloaded during normal use. After the recent view is
+ready, **Hae myös vanhemmat viestit** explicitly starts a background fetch of the whole inbox,
+still without analysis. There is no multi-household tenancy, Redis, external worker, or permanent
 Wilma-content archive.
 
 ## Requirements
@@ -74,7 +74,16 @@ If Wilma asks for MFA, the request pauses with an MFA form. The submitted one-ti
 
 Set `ANTHROPIC_API_KEY`. The Sonnet model is intentionally a code constant in `src/analysis.ts`, not an environment override.
 
-Each message analysis is cached in SQLite by account + student + message id + SHA-256 of relevant message content + analyzer version. An unchanged message is therefore not sent to Sonnet again just because the page is opened or calendar sync is pressed.
+Analysis is always explicit. Select one or more fetched messages and press **Analysoi valitut
+batchina**. Family Wilma submits the selection through Anthropic's Message Batches API, whose
+requests are priced at 50% of the normal API rates. A batch runs asynchronously and can take up
+to 24 hours; its persisted status is refreshed when the message page is opened. Opening the page,
+fetching older messages, and calendar sync never submit analysis requests.
+
+Each result is cached in SQLite by account + student + message id + SHA-256 of relevant message
+content + analyzer version. An unchanged or already-pending message is therefore not submitted
+again. Batch bookkeeping stores these identities and provider request ids, but not Wilma message
+bodies.
 
 The cached structured result is split into:
 
@@ -146,7 +155,7 @@ reverse proxy in front for remote access. Application pages require the Google a
 
 The named volume stores only:
 
-- `family-wilma.sqlite` — Sonnet analysis cache
+- `family-wilma.sqlite` — Sonnet analysis cache and batch status/mapping metadata
 - `google-oauth-token.json` — Google OAuth token, mode 0600
 
 Wilma message bodies, grades, attendance, etc. are not archived locally.
@@ -158,8 +167,10 @@ V1 syncs two kinds of source data:
 1. structured Wilma exams from `wilma-client`
 2. calendar items Sonnet extracts from current Wilma messages
 
-Each sync fetches fresh Wilma data from the last 30 days. Cached Sonnet results are reused for
-unchanged messages; older messages are analyzed only through the explicit older-message action.
+Each sync fetches fresh Wilma data from the last 30 days. It includes only Sonnet results that
+were previously requested explicitly and have reached the local cache. It does not analyze
+missing results. A one-time historical backfill is intentionally outside the v1 application
+workflow and can be handled manually.
 
 ## Privacy and logs
 

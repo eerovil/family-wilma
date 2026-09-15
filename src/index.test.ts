@@ -58,6 +58,7 @@ test("health stays public while application pages require Google sign-in", async
       ["GET", "/setup"],
       ["GET", "/setup/discover?account=school"],
       ["POST", "/messages"],
+      ["POST", "/messages/analyze"],
       ["POST", "/calendar/sync"],
       ["POST", "/mfa"],
       ["POST", "/logout"],

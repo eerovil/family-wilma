@@ -28,3 +28,46 @@ test("analysis cache reuses unchanged content and misses changed content", () =>
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("analysis batches persist pending identities and import results idempotently", () => {
+  const dir = mkdtempSync(join(tmpdir(), "family-wilma-batch-"));
+  try {
+    const store = new AnalysisStore(dir);
+    const identity = {
+      accountId: "school-a",
+      studentNumber: "42",
+      messageId: 123,
+      content: "Retki tiistaina",
+      analyzerVersion: "v1",
+    };
+    store.reserveBatch("submission-1", [{ customId: "message_0", identity }]);
+    assert.equal(store.hasPending(identity), true);
+    assert.deepEqual(store.pendingBatches(), []);
+    store.attachProviderBatch("submission-1", "batch-1");
+    assert.deepEqual(store.pendingBatches(), [{ batchId: "submission-1", providerBatchId: "batch-1" }]);
+
+    store.putBatchResult("submission-1", "message_0", {
+      calendarItems: [],
+      hasOtherContent: true,
+    });
+    store.putBatchResult("submission-1", "message_0", {
+      calendarItems: [],
+      hasOtherContent: true,
+    });
+    store.finishBatch("submission-1", { succeeded: 1, failed: 0 });
+
+    assert.equal(store.get(identity)?.hasOtherContent, true);
+    assert.equal(store.hasPending(identity), false);
+    assert.deepEqual(store.pendingBatches(), []);
+    assert.deepEqual(store.batchStatuses()[0], {
+      batchId: "submission-1",
+      status: "ended",
+      total: 1,
+      succeeded: 1,
+      failed: 0,
+      imported: 1,
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -5,7 +5,7 @@ import { AnalysisStore, type CalendarItem, type MessageAnalysis } from "./store.
 export const ANALYZER_VERSION = "family-wilma-v1-2026-09-14";
 export const SONNET_MODEL = "claude-sonnet-4-5-20250929";
 
-const ANALYSIS_OUTPUT_FORMAT = jsonSchemaOutputFormat({
+const ANALYSIS_SCHEMA = {
   type: "object",
   properties: {
     calendarItems: {
@@ -32,7 +32,9 @@ const ANALYSIS_OUTPUT_FORMAT = jsonSchemaOutputFormat({
   },
   required: ["calendarItems", "hasOtherContent"],
   additionalProperties: false,
-} as const);
+} as const;
+
+const ANALYSIS_OUTPUT_FORMAT = jsonSchemaOutputFormat(ANALYSIS_SCHEMA);
 
 export interface AnalyzableMessage {
   accountId: string;
@@ -53,7 +55,7 @@ function nullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function parseAnalysis(value: unknown): MessageAnalysis {
+export function parseAnalysis(value: unknown): MessageAnalysis {
   if (!value || typeof value !== "object") throw new Error("analysis was not an object");
   const object = value as Record<string, unknown>;
   if (!Array.isArray(object.calendarItems)) throw new Error("analysis calendarItems was not an array");
@@ -76,6 +78,50 @@ function parseAnalysis(value: unknown): MessageAnalysis {
   };
 }
 
+export function analysisIdentity(message: AnalyzableMessage) {
+  return {
+    accountId: message.accountId,
+    studentNumber: message.studentNumber,
+    messageId: message.messageId,
+    content: [message.subject, message.sender, message.sentAt.toISOString(), message.content].join("\n\n"),
+    analyzerVersion: ANALYZER_VERSION,
+  };
+}
+
+function prompt(message: AnalyzableMessage) {
+  return {
+    model: SONNET_MODEL,
+    max_tokens: 1200,
+    system: [
+      "You extract calendar-worthy facts from Finnish school/daycare Wilma messages for a parent.",
+      "Return the result using the provided output schema.",
+      "Schema: {\"calendarItems\":[{\"title\":string,\"date\":\"YYYY-MM-DD\",\"time\":string|null,\"endDate\":\"YYYY-MM-DD\"|null,\"description\":string|null}],\"hasOtherContent\":boolean}.",
+      "hasOtherContent is true whenever the message contains meaningful information that would be lost if the parent saw only the calendar items. When uncertain, use true.",
+      "Do not invent dates. Resolve relative dates using the message sent date where possible; otherwise omit that calendar item.",
+    ].join("\n"),
+    messages: [{
+      role: "user" as const,
+      content: [
+        `Child: ${message.child}`,
+        `Sent: ${message.sentAt.toISOString()}`,
+        `Subject: ${message.subject}`,
+        `Sender: ${message.sender}`,
+        "Message:",
+        message.content,
+      ].join("\n"),
+    }],
+  };
+}
+
+export function batchAnalysisRequest(message: AnalyzableMessage): Anthropic.MessageCreateParamsNonStreaming {
+  return {
+    ...prompt(message),
+    output_config: {
+      format: { type: "json_schema", schema: ANALYSIS_SCHEMA },
+    },
+  };
+}
+
 export class MessageAnalyzer {
   private readonly anthropic: Anthropic;
 
@@ -83,39 +129,18 @@ export class MessageAnalyzer {
     this.anthropic = anthropic ?? new Anthropic({ apiKey });
   }
 
+  cached(message: AnalyzableMessage): MessageAnalysis | null {
+    return this.store.get(analysisIdentity(message));
+  }
+
   async analyze(message: AnalyzableMessage): Promise<{ analysis: MessageAnalysis; cached: boolean }> {
-    const cacheIdentity = {
-      accountId: message.accountId,
-      studentNumber: message.studentNumber,
-      messageId: message.messageId,
-      content: [message.subject, message.sender, message.sentAt.toISOString(), message.content].join("\n\n"),
-      analyzerVersion: ANALYZER_VERSION,
-    };
+    const cacheIdentity = analysisIdentity(message);
     const cached = this.store.get(cacheIdentity);
     if (cached) return { analysis: cached, cached: true };
 
     const response = await this.anthropic.messages.parse({
-      model: SONNET_MODEL,
-      max_tokens: 1200,
+      ...prompt(message),
       output_config: { format: ANALYSIS_OUTPUT_FORMAT },
-      system: [
-        "You extract calendar-worthy facts from Finnish school/daycare Wilma messages for a parent.",
-        "Return the result using the provided output schema.",
-        "Schema: {\"calendarItems\":[{\"title\":string,\"date\":\"YYYY-MM-DD\",\"time\":string|null,\"endDate\":\"YYYY-MM-DD\"|null,\"description\":string|null}],\"hasOtherContent\":boolean}.",
-        "hasOtherContent is true whenever the message contains meaningful information that would be lost if the parent saw only the calendar items. When uncertain, use true.",
-        "Do not invent dates. Resolve relative dates using the message sent date where possible; otherwise omit that calendar item.",
-      ].join("\n"),
-      messages: [{
-        role: "user",
-        content: [
-          `Child: ${message.child}`,
-          `Sent: ${message.sentAt.toISOString()}`,
-          `Subject: ${message.subject}`,
-          `Sender: ${message.sender}`,
-          "Message:",
-          message.content,
-        ].join("\n"),
-      }],
     });
     const analysis = parseAnalysis(response.parsed_output);
     this.store.put(cacheIdentity, analysis);

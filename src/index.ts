@@ -1,17 +1,21 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 import { loadConfig } from "./config.js";
-import { MessageAnalyzer } from "./analysis.js";
+import { analysisIdentity, MessageAnalyzer } from "./analysis.js";
+import { AnalysisBatchService } from "./batch-analysis.js";
 import { GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
-import { AnalysisStore } from "./store.js";
+import { AnalysisStore, type CalendarItem, type MessageAnalysis } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
-import { MessageLoadJob, type AnalyzedMessage, type MessageLoadSnapshot } from "./message-load.js";
+import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
 
 const config = loadConfig();
 const store = new AnalysisStore(config.dataDir);
-const analyzer = new MessageAnalyzer(config.anthropicApiKey, store);
+const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
+const analyzer = new MessageAnalyzer(config.anthropicApiKey, store, anthropic);
+const batches = new AnalysisBatchService(store, analyzer, anthropic);
 const wilma = new WilmaService(config);
 const calendar = new GoogleCalendarService(config);
 const sessions = new SessionStore(config.dataDir);
@@ -19,9 +23,14 @@ const secureCookies = config.baseUrl.startsWith("https://");
 let calendarSyncRunning = false;
 const messageLoad = new MessageLoadJob({
   fetch: (options) => wilma.fetchAll(options),
-  analyze: (message) => analyzer.analyze(message),
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
 });
+
+interface AnalyzedMessage {
+  message: FetchedMessage;
+  calendarItems: CalendarItem[];
+  hasOtherContent: boolean;
+}
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char);
@@ -31,7 +40,7 @@ function layout(title: string, body: string, head = ""): string {
   return `<!doctype html>
 <html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>${escapeHtml(title)}</title>${head}<style>
-:root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.toplink{color:#1d4ed8;text-decoration:none}.message-body{white-space:pre-wrap;line-height:1.45}.calendar{margin-top:12px;padding-top:10px;border-top:1px solid #e5e7eb}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
+:root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}.message-body{white-space:pre-wrap;line-height:1.45}.calendar{margin-top:12px;padding-top:10px;border-top:1px solid #e5e7eb}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
 </style></head><body><main class="wrap">${body}</main></body></html>`;
 }
 
@@ -48,18 +57,11 @@ function home(): string {
 <p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`);
 }
 
-async function analyzeMessages(messages: FetchedMessage[]): Promise<AnalyzedMessage[]> {
-  const result: AnalyzedMessage[] = [];
-  for (const message of messages) {
-    const analyzed = await analyzer.analyze(message);
-    result.push({
-      message,
-      calendarItems: analyzed.analysis.calendarItems,
-      hasOtherContent: analyzed.analysis.hasOtherContent,
-      cached: analyzed.cached,
-    });
-  }
-  return result;
+function cachedMessages(messages: FetchedMessage[]): AnalyzedMessage[] {
+  return messages.flatMap((message) => {
+    const analysis = analyzer.cached(message);
+    return analysis ? [{ message, calendarItems: analysis.calendarItems, hasOtherContent: analysis.hasOtherContent }] : [];
+  });
 }
 
 function messageLoadingPage(snapshot: MessageLoadSnapshot): string {
@@ -71,35 +73,69 @@ function messageLoadingPage(snapshot: MessageLoadSnapshot): string {
   if (snapshot.state === "error") return layout("Viestit", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit</h1><div class="error">${escapeHtml(snapshot.error ?? "Viestien lataaminen epäonnistui.")}</div>`);
   if (snapshot.state === "ready") {
     const scope = snapshot.includeOlder ? "Kaikki viestit" : "Viimeiset 30 päivää";
-    const older = snapshot.includeOlder ? "" : `<form method="post" action="/messages?scope=all"><button class="secondary" type="submit">Hae ja analysoi myös vanhemmat viestit</button></form>`;
+    const older = snapshot.includeOlder ? "" : `<form method="post" action="/messages?scope=all"><button class="secondary" type="submit">Hae myös vanhemmat viestit</button></form>`;
     return messagesPage(snapshot.messages, scope, older);
   }
-  const progress = snapshot.state === "fetching"
-    ? "Haetaan viestejä Wilmasta…"
-    : `Analysoidaan viestejä: ${snapshot.completed}/${snapshot.total}`;
   const queued = snapshot.queuedIncludeOlder ? '<p class="muted">Vanhemmat viestit haetaan tämän jälkeen.</p>' : "";
-  return layout("Viestit latautuvat", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit latautuvat</h1><div class="card"><strong>${progress}</strong><p class="muted">Sivun voi sulkea. Työ jatkuu palvelimella, eikä uusi painallus käynnistä toista työtä.</p>${queued}</div>`, '<meta http-equiv="refresh" content="3">');
+  return layout("Viestit latautuvat", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit latautuvat</h1><div class="card"><strong>Haetaan viestejä Wilmasta…</strong><p class="muted">Sivun voi sulkea. Työ jatkuu palvelimella, eikä uusi painallus käynnistä toista työtä.</p>${queued}</div>`, '<meta http-equiv="refresh" content="3">');
 }
 
 function busyPage(message: string): string {
   return layout("Toiminto käynnissä", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Toiminto käynnissä</h1><div class="card">${escapeHtml(message)}</div>`);
 }
 
-function messageCards(messages: AnalyzedMessage[]): string {
-  return messages.map(({ message, calendarItems, hasOtherContent, cached }) => {
+function selectionId(message: FetchedMessage): string {
+  return Buffer.from(JSON.stringify([message.accountId, message.studentNumber, message.messageId])).toString("base64url");
+}
+
+function messageCards(messages: FetchedMessage[]): string {
+  return messages.map((message) => {
+    const analysis = analyzer.cached(message);
+    const pending = store.hasPending(analysisIdentity(message));
+    const calendarItems = analysis?.calendarItems ?? [];
+    const hasOtherContent = analysis?.hasOtherContent ?? false;
     const items = calendarItems.length
       ? `<div class="calendar"><strong>Kalenteriin:</strong>${calendarItems.map((item) => `<div>${escapeHtml(item.date)}${item.time ? ` ${escapeHtml(item.time)}` : ""} — ${escapeHtml(item.title)}</div>`).join("")}</div>`
       : "";
+    const state = analysis ? "Analysoitu" : pending ? "Analyysi jonossa" : "Ei analysoitu";
+    const selection = analysis || pending
+      ? `<span class="muted">${state}</span>`
+      : `<label class="select"><input type="checkbox" name="message" value="${selectionId(message)}"> Valitse analysoitavaksi</label>`;
     return `<article class="card${hasOtherContent ? " important" : ""}">
 <div><span class="pill">${escapeHtml(message.child)}</span>${hasOtherContent ? '<span class="pill">Sisältää muutakin tärkeää</span>' : ""}</div>
 <h2>${escapeHtml(message.subject)}</h2>
-<p class="muted">${escapeHtml(message.sender)} · ${escapeHtml(message.sentAt.toLocaleString("fi-FI", { timeZone: "Europe/Helsinki" }))} · ${cached ? "analyysi välimuistista" : "analysoitu nyt"}</p>
+<p class="muted">${escapeHtml(message.sender)} · ${escapeHtml(message.sentAt.toLocaleString("fi-FI", { timeZone: "Europe/Helsinki" }))} · ${state}</p>
+${selection}
 <div class="message-body">${escapeHtml(message.content)}</div>${items}</article>`;
   }).join("");
 }
 
-function messagesPage(messages: AnalyzedMessage[], title = "Kaikki viestit", after = ""): string {
-  return layout(title, `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>${escapeHtml(title)}</h1>${messageCards(messages) || '<p class="muted">Ei viestejä.</p>'}${after}`);
+function hasSelectableMessages(messages: FetchedMessage[]): boolean {
+  return messages.some((message) => !analyzer.cached(message) && !store.hasPending(analysisIdentity(message)));
+}
+
+function batchStatus(): { html: string; active: boolean } {
+  const statuses = batches.statuses();
+  const active = statuses.some((status) => status.status === "in_progress");
+  const html = statuses.slice(0, 3).map((status) => {
+    if (status.status === "submitting") {
+      return '<div class="error">Batch-lähetyksen tila jäi epävarmaksi. Viestejä ei lähetetä automaattisesti uudelleen.</div>';
+    }
+    return status.status === "in_progress"
+      ? `<div class="card"><strong>Batch-analyysi käynnissä</strong><p class="muted">${status.total} viestiä · valmiina ${status.succeeded + status.failed}/${status.total}</p></div>`
+      : `<div class="success">Batch-analyysi valmis: ${status.imported} analysoitu${status.failed ? `, ${status.failed} epäonnistui` : ""}.</div>`;
+  }).join("");
+  return { html, active };
+}
+
+function messagesPage(messages: FetchedMessage[], title = "Kaikki viestit", after = ""): string {
+  const status = batchStatus();
+  const cards = messageCards(messages);
+  const submit = hasSelectableMessages(messages)
+    ? '<div class="analyze-bar"><button type="submit">Analysoi valitut batchina</button></div>'
+    : "";
+  const form = cards ? `<form method="post" action="/messages/analyze">${cards}${submit}</form>` : '<p class="muted">Ei viestejä.</p>';
+  return layout(title, `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>${escapeHtml(title)}</h1>${status.html}${form}${after}`, status.active ? '<meta http-equiv="refresh" content="10">' : "");
 }
 
 function mfaPage(accountId: string, returnTo: string, returnMethod: "GET" | "POST"): string {
@@ -191,20 +227,36 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       messageLoad.start({ includeOlder: url.searchParams.get("scope") === "all" });
       return redirect(res, "/messages");
     }
-    if (req.method === "GET" && url.pathname === "/messages") return send(res, 200, messageLoadingPage(messageLoad.snapshot()));
+    if (req.method === "GET" && url.pathname === "/messages") {
+      void batches.refresh().catch((error) => console.error(`analysis batch refresh failed: ${error instanceof Error ? error.name : "Error"}`));
+      return send(res, 200, messageLoadingPage(messageLoad.snapshot()));
+    }
+    if (req.method === "POST" && url.pathname === "/messages/analyze") {
+      const load = messageLoad.snapshot();
+      if (load.state !== "ready") return send(res, 409, messageLoadingPage(load));
+      const form = await readForm(req);
+      const selected = new Set(form.getAll("message"));
+      const messages = load.messages.filter((message) => selected.has(selectionId(message)));
+      if (!messages.length) {
+        return send(res, 400, messagesPage(load.messages, load.includeOlder ? "Kaikki viestit" : "Viimeiset 30 päivää", '<div class="error">Valitse vähintään yksi analysoitava viesti.</div>'));
+      }
+      await batches.submit(messages);
+      return redirect(res, "/messages");
+    }
     if (req.method === "POST" && url.pathname === "/calendar/sync") {
       if (!calendar.isConnected()) return redirect(res, "/oauth/google/start");
       if (calendarSyncRunning) {
         return send(res, 409, busyPage("Kalenterin synkronointi on jo käynnissä."));
       }
       const load = messageLoad.snapshot();
-      if (load.state === "fetching" || load.state === "analyzing" || load.state === "mfa") {
+      if (load.state === "fetching" || load.state === "mfa") {
         return send(res, 409, messageLoadingPage(load));
       }
       calendarSyncRunning = true;
       try {
+        await batches.refresh().catch((error) => console.error(`analysis batch refresh failed: ${error instanceof Error ? error.name : "Error"}`));
         const bundle = await wilma.fetchAll({ sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000) });
-        const analyzed = await analyzeMessages(bundle.messages);
+        const analyzed = cachedMessages(bundle.messages);
         const items = [...bundle.structuredCalendarItems, ...messageCalendarItems(analyzed)];
         const result = await calendar.sync(items);
         return send(res, 200, layout("Kalenteri synkattu", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kalenteri synkattu</h1><div class="success">Luotu ${result.created}, päivitetty ${result.updated}, ennallaan ${result.unchanged}.</div>`));
