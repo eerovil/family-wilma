@@ -113,6 +113,11 @@ GOOGLE_ALLOWED_EMAIL=you@example.com
 APP_BASE_URL=https://family-wilma.example.com
 ```
 
+Optional server-side error reporting uses `SENTRY_DSN`, with
+`SENTRY_ENVIRONMENT=production` and an optional `SENTRY_RELEASE`. Family Wilma sends only
+fixed error categories, stack frames, safe status/code metadata, and fixed operation tags: request data, cookies, user identity,
+breadcrumbs, local variables, and performance traces are disabled.
+
 Google OAuth signs into the app and grants permission to create and manage calendars owned by
 Family Wilma in the same consent flow. It does not grant access to unrelated calendars. Only
 `GOOGLE_ALLOWED_EMAIL` may sign in. Sessions are revocable, stored as hashed opaque tokens
@@ -186,4 +191,4 @@ manually.
 
 ## Privacy and logs
 
-Secrets remain server-side. The application never intentionally logs Wilma credentials, message bodies, child data, Google tokens, or prompts containing private Wilma content. Request failures log only the error class name and return a generic browser error page.
+Secrets remain server-side. The application never intentionally logs Wilma credentials, message bodies, child data, Google tokens, or prompts containing private Wilma content. Request failures log only a fixed error category and return a generic browser error page.

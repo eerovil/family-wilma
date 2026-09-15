@@ -77,6 +77,21 @@ test("message loading exposes MFA requirements so the HTTP flow can resume the f
   assert.equal(job.claimMfa("school"), false);
 });
 
+test("message loading reports non-MFA background failures", async () => {
+  const failure = new Error("Wilma unavailable");
+  const reported: unknown[] = [];
+  const job = new MessageLoadJob({
+    fetch: async () => { throw failure; },
+    reportError: (error) => reported.push(error),
+  });
+
+  job.start({ includeOlder: false });
+  await job.wait();
+
+  assert.deepEqual(reported, [failure]);
+  assert.equal(job.snapshot().state, "error");
+});
+
 test("older messages are fetched only after an explicit start", async () => {
   const cutoffs: Array<Date | undefined> = [];
   const job = new MessageLoadJob({

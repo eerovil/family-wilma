@@ -16,6 +16,7 @@ export interface MessageLoadSnapshot {
 interface MessageLoadDependencies {
   fetch(options: { sentAfter?: Date }): Promise<WilmaBundle>;
   mfaAccountId?(error: unknown): string | null;
+  reportError?(error: unknown): void;
   now?: () => Date;
 }
 
@@ -93,7 +94,8 @@ export class MessageLoadJob {
         this.status = { ...this.status, state: "mfa", mfaAccountId };
         return;
       }
-      console.error(`message loading failed: ${error instanceof Error ? error.name : "Error"}`);
+      if (this.dependencies.reportError) this.dependencies.reportError(error);
+      else console.error(`message loading failed: ${error instanceof Error ? error.name : "Error"}`);
       this.status = { ...this.status, state: "error", error: "Viestien lataaminen epäonnistui." };
     }
   }

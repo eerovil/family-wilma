@@ -11,8 +11,29 @@ import { MESSAGE_CARD_CSS, renderMessageCard } from "./message-view.js";
 import { AnalysisStore, type CalendarItem } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
+import { configureErrorReportingSecrets, flushErrorReporting, initializeErrorReporting, reportError } from "./telemetry.js";
+
+initializeErrorReporting({
+  dsn: process.env.SENTRY_DSN,
+  environment: process.env.SENTRY_ENVIRONMENT,
+  release: process.env.SENTRY_RELEASE,
+});
+let fatalErrorInProgress = false;
+function reportFatal(error: unknown, operation: string): void {
+  if (fatalErrorInProgress) return;
+  fatalErrorInProgress = true;
+  reportError(error, { operation });
+  void flushErrorReporting().finally(() => process.exit(1));
+}
+process.on("uncaughtException", (error) => reportFatal(error, "process.uncaught"));
+process.on("unhandledRejection", (reason) => reportFatal(reason, "process.unhandled_rejection"));
 
 const config = loadConfig();
+configureErrorReportingSecrets([
+  config.anthropicApiKey,
+  config.googleClientSecret,
+  ...config.wilmaAccounts.flatMap((account) => [account.username, account.password]),
+]);
 const store = new AnalysisStore(config.dataDir);
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 const analyzer = new MessageAnalyzer(config.anthropicApiKey, store, anthropic);
@@ -25,6 +46,7 @@ let calendarSyncRunning = false;
 const messageLoad = new MessageLoadJob({
   fetch: (options) => wilma.fetchAll(options),
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
+  reportError: (error) => reportError(error, { operation: "message.load" }),
 });
 
 interface AnalyzedMessage {
@@ -216,7 +238,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return redirect(res, "/messages");
     }
     if (req.method === "GET" && url.pathname === "/messages") {
-      void batches.refresh().catch((error) => console.error(`analysis batch refresh failed: ${error instanceof Error ? error.name : "Error"}`));
+      void batches.refresh().catch((error) => reportError(error, { operation: "analysis.batch.refresh" }));
       return send(res, 200, messageLoadingPage(messageLoad.snapshot()));
     }
     if (req.method === "POST" && url.pathname === "/messages/analyze") {
@@ -242,7 +264,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
       calendarSyncRunning = true;
       try {
-        await batches.refresh().catch((error) => console.error(`analysis batch refresh failed: ${error instanceof Error ? error.name : "Error"}`));
+        await batches.refresh().catch((error) => reportError(error, { operation: "analysis.batch.refresh" }));
         const bundle = await wilma.fetchAll({
           sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000),
           includeLessons: true,
@@ -292,12 +314,30 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const returnMethod = req.method === "POST" ? "POST" : "GET";
       return send(res, 409, mfaPage(error.accountId, `${url.pathname}${url.search}`, returnMethod));
     }
-    console.error(`request failed: ${error instanceof Error ? error.name : "Error"}`);
+    reportError(error, {
+      operation: "http.request",
+      tags: { method: knownMethod(req.method), route: knownRoute(url.pathname) },
+    });
     return send(res, 500, layout("Virhe", '<div class="error">Toiminto epäonnistui. Tarkista palvelimen asetukset ja yritä uudelleen.</div><p><a class="toplink" href="/">Etusivulle</a></p>'));
   }
 }
 
+function knownRoute(pathname: string): string {
+  return new Set([
+    "/", "/healthz", "/oauth/google/start", "/oauth/google/callback", "/setup",
+    "/logout", "/messages", "/messages/analyze", "/calendar/sync", "/mfa",
+    "/setup/discover",
+  ]).has(pathname) ? pathname : "unknown";
+}
+
+function knownMethod(method: string | undefined): string {
+  return new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]).has(method ?? "")
+    ? method!
+    : "UNKNOWN";
+}
+
 const server = createServer((req, res) => { void handle(req, res); });
+server.on("error", (error) => reportFatal(error, "server.listen"));
 server.listen(config.port, config.host, () => {
   console.log(`family-wilma listening on port ${config.port}`);
 });
