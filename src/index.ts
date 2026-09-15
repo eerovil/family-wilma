@@ -5,8 +5,9 @@ import { MessageAnalyzer } from "./analysis.js";
 import { GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
-import { AnalysisStore, type CalendarItem } from "./store.js";
+import { AnalysisStore } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
+import { MessageLoadJob, type AnalyzedMessage, type MessageLoadSnapshot } from "./message-load.js";
 
 const config = loadConfig();
 const store = new AnalysisStore(config.dataDir);
@@ -15,22 +16,21 @@ const wilma = new WilmaService(config);
 const calendar = new GoogleCalendarService(config);
 const sessions = new SessionStore(config.dataDir);
 const secureCookies = config.baseUrl.startsWith("https://");
-
-interface AnalyzedMessage {
-  message: FetchedMessage;
-  calendarItems: CalendarItem[];
-  hasOtherContent: boolean;
-  cached: boolean;
-}
+let calendarSyncRunning = false;
+const messageLoad = new MessageLoadJob({
+  fetch: (options) => wilma.fetchAll(options),
+  analyze: (message) => analyzer.analyze(message),
+  mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
+});
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char);
 }
 
-function layout(title: string, body: string): string {
+function layout(title: string, body: string, head = ""): string {
   return `<!doctype html>
 <html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)}</title><style>
+    <title>${escapeHtml(title)}</title>${head}<style>
 :root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.toplink{color:#1d4ed8;text-decoration:none}.message-body{white-space:pre-wrap;line-height:1.45}.calendar{margin-top:12px;padding-top:10px;border-top:1px solid #e5e7eb}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
 </style></head><body><main class="wrap">${body}</main></body></html>`;
 }
@@ -42,7 +42,7 @@ function home(): string {
   return layout("Family Wilma", `
 <h1>Family Wilma</h1>
 <div class="actions">
-  <form method="post" action="/messages"><button type="submit">Näytä kaikki viestit</button></form>
+  <form method="post" action="/messages"><button type="submit">Näytä viimeiset 30 päivää</button></form>
   <form method="post" action="/calendar/sync"><button type="submit">Synkkaa kalenteriin</button></form>
 </div>
 <p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`);
@@ -62,8 +62,31 @@ async function analyzeMessages(messages: FetchedMessage[]): Promise<AnalyzedMess
   return result;
 }
 
-function messagesPage(messages: AnalyzedMessage[]): string {
-  const cards = messages.map(({ message, calendarItems, hasOtherContent, cached }) => {
+function messageLoadingPage(snapshot: MessageLoadSnapshot): string {
+  if (snapshot.state === "idle") return layout("Viestit", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit</h1><p class="muted">Viestien latausta ei ole aloitettu.</p>`);
+  if (snapshot.state === "mfa" && snapshot.mfaAccountId) {
+    const returnTo = snapshot.includeOlder ? "/messages?scope=all" : "/messages";
+    return mfaPage(snapshot.mfaAccountId, returnTo, "POST");
+  }
+  if (snapshot.state === "error") return layout("Viestit", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit</h1><div class="error">${escapeHtml(snapshot.error ?? "Viestien lataaminen epäonnistui.")}</div>`);
+  if (snapshot.state === "ready") {
+    const scope = snapshot.includeOlder ? "Kaikki viestit" : "Viimeiset 30 päivää";
+    const older = snapshot.includeOlder ? "" : `<form method="post" action="/messages?scope=all"><button class="secondary" type="submit">Hae ja analysoi myös vanhemmat viestit</button></form>`;
+    return messagesPage(snapshot.messages, scope, older);
+  }
+  const progress = snapshot.state === "fetching"
+    ? "Haetaan viestejä Wilmasta…"
+    : `Analysoidaan viestejä: ${snapshot.completed}/${snapshot.total}`;
+  const queued = snapshot.queuedIncludeOlder ? '<p class="muted">Vanhemmat viestit haetaan tämän jälkeen.</p>' : "";
+  return layout("Viestit latautuvat", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viestit latautuvat</h1><div class="card"><strong>${progress}</strong><p class="muted">Sivun voi sulkea. Työ jatkuu palvelimella, eikä uusi painallus käynnistä toista työtä.</p>${queued}</div>`, '<meta http-equiv="refresh" content="3">');
+}
+
+function busyPage(message: string): string {
+  return layout("Toiminto käynnissä", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Toiminto käynnissä</h1><div class="card">${escapeHtml(message)}</div>`);
+}
+
+function messageCards(messages: AnalyzedMessage[]): string {
+  return messages.map(({ message, calendarItems, hasOtherContent, cached }) => {
     const items = calendarItems.length
       ? `<div class="calendar"><strong>Kalenteriin:</strong>${calendarItems.map((item) => `<div>${escapeHtml(item.date)}${item.time ? ` ${escapeHtml(item.time)}` : ""} — ${escapeHtml(item.title)}</div>`).join("")}</div>`
       : "";
@@ -73,13 +96,16 @@ function messagesPage(messages: AnalyzedMessage[]): string {
 <p class="muted">${escapeHtml(message.sender)} · ${escapeHtml(message.sentAt.toLocaleString("fi-FI", { timeZone: "Europe/Helsinki" }))} · ${cached ? "analyysi välimuistista" : "analysoitu nyt"}</p>
 <div class="message-body">${escapeHtml(message.content)}</div>${items}</article>`;
   }).join("");
-  return layout("Kaikki viestit", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kaikki viestit</h1>${cards || '<p class="muted">Ei viestejä.</p>'}`);
 }
 
-function mfaPage(error: MfaCodeRequiredError, returnTo: string, returnMethod: "GET" | "POST"): string {
+function messagesPage(messages: AnalyzedMessage[], title = "Kaikki viestit", after = ""): string {
+  return layout(title, `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>${escapeHtml(title)}</h1>${messageCards(messages) || '<p class="muted">Ei viestejä.</p>'}${after}`);
+}
+
+function mfaPage(accountId: string, returnTo: string, returnMethod: "GET" | "POST"): string {
   return layout("Wilma MFA", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Wilma tarvitsee MFA-koodin</h1>
-<p>Tilille <strong>${escapeHtml(error.accountId)}</strong> tarvitaan kertakäyttöinen vahvistuskoodi. Koodia ei tallenneta levylle.</p>
-<form method="post" action="/mfa"><input type="hidden" name="accountId" value="${escapeHtml(error.accountId)}"><input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}"><input type="hidden" name="returnMethod" value="${returnMethod}"><label>Koodi<input name="code" inputmode="numeric" autocomplete="one-time-code" required></label><p><button type="submit">Jatka</button></p></form>`);
+<p>Tilille <strong>${escapeHtml(accountId)}</strong> tarvitaan kertakäyttöinen vahvistuskoodi. Koodia ei tallenneta levylle.</p>
+<form method="post" action="/mfa"><input type="hidden" name="accountId" value="${escapeHtml(accountId)}"><input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}"><input type="hidden" name="returnMethod" value="${returnMethod}"><label>Koodi<input name="code" inputmode="numeric" autocomplete="one-time-code" required></label><p><button type="submit">Jatka</button></p></form>`);
 }
 
 function setupPage(email: string): string {
@@ -159,17 +185,32 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return send(res, 200, layout("Kirjauduttu ulos", '<h1>Kirjauduttu ulos</h1><p><a class="toplink" href="/oauth/google/start">Kirjaudu uudelleen Googlella</a></p>'));
     }
     if (req.method === "POST" && url.pathname === "/messages") {
-      const bundle = await wilma.fetchAll();
-      const analyzed = await analyzeMessages(bundle.messages);
-      return send(res, 200, messagesPage(analyzed));
+      if (calendarSyncRunning) {
+        return send(res, 409, busyPage("Kalenterin synkronointi on vielä käynnissä. Yritä viestien lataamista sen valmistuttua."));
+      }
+      messageLoad.start({ includeOlder: url.searchParams.get("scope") === "all" });
+      return redirect(res, "/messages");
     }
+    if (req.method === "GET" && url.pathname === "/messages") return send(res, 200, messageLoadingPage(messageLoad.snapshot()));
     if (req.method === "POST" && url.pathname === "/calendar/sync") {
       if (!calendar.isConnected()) return redirect(res, "/oauth/google/start");
-      const bundle = await wilma.fetchAll();
-      const analyzed = await analyzeMessages(bundle.messages);
-      const items = [...bundle.structuredCalendarItems, ...messageCalendarItems(analyzed)];
-      const result = await calendar.sync(items);
-      return send(res, 200, layout("Kalenteri synkattu", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kalenteri synkattu</h1><div class="success">Luotu ${result.created}, päivitetty ${result.updated}, ennallaan ${result.unchanged}.</div>`));
+      if (calendarSyncRunning) {
+        return send(res, 409, busyPage("Kalenterin synkronointi on jo käynnissä."));
+      }
+      const load = messageLoad.snapshot();
+      if (load.state === "fetching" || load.state === "analyzing" || load.state === "mfa") {
+        return send(res, 409, messageLoadingPage(load));
+      }
+      calendarSyncRunning = true;
+      try {
+        const bundle = await wilma.fetchAll({ sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000) });
+        const analyzed = await analyzeMessages(bundle.messages);
+        const items = [...bundle.structuredCalendarItems, ...messageCalendarItems(analyzed)];
+        const result = await calendar.sync(items);
+        return send(res, 200, layout("Kalenteri synkattu", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kalenteri synkattu</h1><div class="success">Luotu ${result.created}, päivitetty ${result.updated}, ennallaan ${result.unchanged}.</div>`));
+      } finally {
+        calendarSyncRunning = false;
+      }
     }
     if (req.method === "POST" && url.pathname === "/mfa") {
       const form = await readForm(req);
@@ -177,8 +218,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const code = form.get("code") ?? "";
       const returnTo = form.get("returnTo") || "/";
       const returnMethod = form.get("returnMethod") === "POST" ? "POST" : "GET";
-      wilma.submitMfaCode(accountId, code);
       const safeReturnTo = safeReturnPath(returnTo);
+      if (returnMethod === "POST" && safeReturnTo.startsWith("/messages")) {
+        if (!messageLoad.claimMfa(accountId)) {
+          return send(res, 409, layout("Wilma MFA", '<div class="error">MFA-pyyntö ei ole enää voimassa.</div><p><a class="toplink" href="/messages">Takaisin viesteihin</a></p>'));
+        }
+        wilma.submitMfaCode(accountId, code);
+        messageLoad.start({ includeOlder: new URL(safeReturnTo, config.baseUrl).searchParams.get("scope") === "all" });
+        return redirect(res, "/messages");
+      }
+      wilma.submitMfaCode(accountId, code);
       return redirect(res, safeReturnTo, returnMethod === "POST" ? 307 : 303);
     }
     if (req.method === "GET" && url.pathname === "/setup/discover") {
@@ -194,7 +243,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
     if (error instanceof MfaCodeRequiredError) {
       const returnMethod = req.method === "POST" ? "POST" : "GET";
-      return send(res, 409, mfaPage(error, `${url.pathname}${url.search}`, returnMethod));
+      return send(res, 409, mfaPage(error.accountId, `${url.pathname}${url.search}`, returnMethod));
     }
     console.error(`request failed: ${error instanceof Error ? error.name : "Error"}`);
     return send(res, 500, layout("Virhe", '<div class="error">Toiminto epäonnistui. Tarkista palvelimen asetukset ja yritä uudelleen.</div><p><a class="toplink" href="/">Etusivulle</a></p>'));

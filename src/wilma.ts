@@ -54,7 +54,7 @@ export class WilmaService {
     return WilmaClient.listStudents(this.baseProfile(account), this.mfaCallback(account));
   }
 
-  async fetchAll(): Promise<WilmaBundle> {
+  async fetchAll(options: { sentAfter?: Date } = {}): Promise<WilmaBundle> {
     const messages: FetchedMessage[] = [];
     const structuredCalendarItems: SourceCalendarItem[] = [];
     for (const account of this.config.wilmaAccounts) {
@@ -67,7 +67,10 @@ export class WilmaService {
       for (const profile of profiles) {
         const client = await this.clientForFetch(account, profile);
         const listed = await client.messages.list("inbox");
-        for (const summary of listed) {
+        const selected = options.sentAfter
+          ? listed.filter((summary) => summary.sentAt.getTime() >= options.sentAfter!.getTime())
+          : listed;
+        for (const summary of selected) {
           const detail = await client.messages.get(summary.wilmaId);
           messages.push({
             accountId: account.id,

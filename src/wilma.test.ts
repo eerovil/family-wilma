@@ -109,3 +109,53 @@ test("MFA retries resume after completed discovery and profile logins", async ()
     WilmaClient.login = originalLogin;
   }
 });
+
+test("recent fetch skips old message details before they are downloaded", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  const detailIds: number[] = [];
+
+  WilmaClient.listStudents = async () => [
+    { studentNumber: "101", name: "First Child", href: "/profiles/101" },
+  ];
+  WilmaClient.login = async () => ({
+    messages: {
+      list: async () => [
+        { wilmaId: 1, subject: "Recent", sentAt: new Date("2026-09-14T08:00:00Z") },
+        { wilmaId: 2, subject: "Old", sentAt: new Date("2026-07-01T08:00:00Z") },
+      ],
+      get: async (wilmaId: number) => {
+        detailIds.push(wilmaId);
+        return {
+          wilmaId,
+          subject: wilmaId === 1 ? "Recent" : "Old",
+          senderName: "Teacher",
+          sentAt: wilmaId === 1 ? new Date("2026-09-14T08:00:00Z") : new Date("2026-07-01T08:00:00Z"),
+          content: "Content",
+        };
+      },
+    },
+    exams: { list: async () => [] },
+  }) as unknown as WilmaClient;
+
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [],
+    }],
+  } as unknown as AppConfig;
+
+  try {
+    const bundle = await new WilmaService(config).fetchAll({
+      sentAfter: new Date("2026-08-16T00:00:00Z"),
+    });
+    assert.deepEqual(detailIds, [1]);
+    assert.deepEqual(bundle.messages.map((message) => message.messageId), [1]);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});

@@ -94,6 +94,22 @@ test("health stays public while application pages require Google sign-in", async
     assert.equal(signedIn.status, 200);
     assert.match(await signedIn.text(), /Kirjaudu ulos/);
 
+    const startedAt = Date.now();
+    const startMessages = await fetch(`http://127.0.0.1:${port}/messages`, {
+      method: "POST",
+      headers: { cookie: `family_wilma_session=${token}` },
+      redirect: "manual",
+    });
+    assert.equal(startMessages.status, 303);
+    assert.equal(startMessages.headers.get("location"), "/messages");
+    assert.ok(Date.now() - startedAt < 1_000, "message loading POST must not wait for the job");
+
+    const messages = await fetch(`http://127.0.0.1:${port}/messages`, {
+      headers: { cookie: `family_wilma_session=${token}` },
+    });
+    assert.equal(messages.status, 200);
+    assert.match(await messages.text(), /30 päivää/);
+
     const logout = await fetch(`http://127.0.0.1:${port}/logout`, {
       method: "POST",
       headers: { cookie: `family_wilma_session=${token}` },

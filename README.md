@@ -4,10 +4,17 @@ Family Wilma is a small self-hosted app for one household. It combines messages 
 
 The normal daily-use screen intentionally has only two primary actions:
 
-- **Näytä kaikki viestit**
+- **Näytä viimeiset 30 päivää**
 - **Synkkaa kalenteriin**
 
-There is no multi-household tenancy, queue, Redis, background worker, or permanent Wilma-content archive.
+Recent messages load through one in-process background job so a large inbox cannot hold the
+browser request open. The page reports fetch/analysis progress and refreshes itself. Repeated
+clicks reuse the running job instead of starting duplicate Wilma or Anthropic requests.
+
+Messages older than 30 days are not downloaded or analyzed during normal use. After the recent
+view is ready, **Hae ja analysoi myös vanhemmat viestit** explicitly starts a background load of
+the whole inbox. There is no multi-household tenancy, Redis, external worker, or permanent
+Wilma-content archive.
 
 ## Requirements
 
@@ -151,7 +158,8 @@ V1 syncs two kinds of source data:
 1. structured Wilma exams from `wilma-client`
 2. calendar items Sonnet extracts from current Wilma messages
 
-Each sync fetches fresh Wilma data. Cached Sonnet results are reused for unchanged messages.
+Each sync fetches fresh Wilma data from the last 30 days. Cached Sonnet results are reused for
+unchanged messages; older messages are analyzed only through the explicit older-message action.
 
 ## Privacy and logs
 
