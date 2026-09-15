@@ -20,7 +20,10 @@ function service() {
     googleAllowedEmail: "eero@example.com",
     wilmaAccounts: [],
   };
-  return { calendar: new GoogleCalendarService(config), dataDir };
+  return {
+    calendar: new GoogleCalendarService(config, { sleep: async () => {}, random: () => 0 }),
+    dataDir,
+  };
 }
 
 test("timed events stay one hour long across Helsinki winter time", () => {
@@ -234,6 +237,90 @@ test("sync creates owned calendars, routes lessons separately, and removes stale
     const persisted = JSON.parse(readFileSync(join(dataDir, "google-calendar-map.json"), "utf8"));
     assert.equal(persisted.shared, "calendar-1");
     assert.equal(persisted.lessons.Child, "calendar-2");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("calendar writes are paced and retry only explicit rate-limit rejections", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "family-wilma-google-rate-limit-"));
+  const config: AppConfig = {
+    port: 3000,
+    host: "127.0.0.1",
+    baseUrl: "http://localhost:3000",
+    dataDir,
+    anthropicApiKey: "test",
+    googleClientId: "test",
+    googleClientSecret: "test",
+    googleAllowedEmail: "eero@example.com",
+    wilmaAccounts: [],
+  };
+  const sleeps: number[] = [];
+  const calendar = new GoogleCalendarService(config, {
+    sleep: async (milliseconds) => { sleeps.push(milliseconds); },
+    random: () => 0,
+  });
+  let attempts = 0;
+  const fakeApi = {
+    calendars: {
+      get: async () => ({ data: {} }),
+      insert: async () => ({ data: { id: "calendar" } }),
+    },
+    events: {
+      list: async () => ({ data: { items: [] } }),
+      insert: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw Object.assign(new Error("private provider message"), {
+            response: { status: 403, data: { error: { errors: [{ reason: "rateLimitExceeded" }] } } },
+          });
+        }
+        return { data: {} };
+      },
+      update: async () => ({ data: {} }),
+      delete: async () => ({ data: {} }),
+    },
+  };
+
+  try {
+    writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
+      access_token: "test",
+      family_wilma_calendar_scope: "calendar.app.created",
+    }));
+    writeFileSync(join(dataDir, "google-calendar-map.json"), JSON.stringify({
+      shared: "calendar", lessons: {}, provisioning: null,
+    }));
+    (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
+      setCredentials() {},
+      on() {},
+    });
+    (calendar as unknown as { api: () => unknown }).api = () => fakeApi;
+
+    const result = await calendar.sync({
+      sharedItems: [{
+        sourceId: "wilma-exam:1", title: "Exam", date: "2026-09-20",
+        time: null, endDate: null, description: null,
+      }],
+      lessonCalendars: [],
+      lessonWindow: { start: "2026-09-14", end: "2027-03-15", deleteFrom: "2026-09-15" },
+    });
+
+    assert.equal(attempts, 2);
+    assert.deepEqual(sleeps, [250, 1_000]);
+    assert.deepEqual(result, { created: 1, updated: 0, unchanged: 0, deleted: 0 });
+
+    let forbiddenAttempts = 0;
+    await assert.rejects(
+      (calendar as unknown as { writeRequest<T>(action: () => Promise<T>): Promise<T> }).writeRequest(async () => {
+        forbiddenAttempts += 1;
+        throw Object.assign(new Error("private provider message"), {
+          response: { status: 403, data: { error: { errors: [{ reason: "forbidden" }] } } },
+        });
+      }),
+      /private provider message/,
+    );
+    assert.equal(forbiddenAttempts, 1);
+    assert.deepEqual(sleeps, [250, 1_000, 250]);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

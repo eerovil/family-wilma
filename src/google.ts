@@ -9,6 +9,8 @@ const MANAGED_BY = "family-wilma-v1";
 const HELSINKI_TIME_ZONE = "Europe/Helsinki";
 const APP_CREATED_SCOPE = "https://www.googleapis.com/auth/calendar.app.created";
 const SCOPE_MARKER = "calendar.app.created";
+const WRITE_INTERVAL_MS = 250;
+const MAX_RATE_LIMIT_RETRIES = 5;
 
 export interface CalendarSyncPlan {
   sharedItems: SourceCalendarItem[];
@@ -25,11 +27,16 @@ interface CalendarMap {
 type CalendarApi = calendar_v3.Calendar;
 type CalendarEvent = calendar_v3.Schema$Event;
 
+interface GoogleCalendarDependencies {
+  sleep?(milliseconds: number): Promise<void>;
+  random?(): number;
+}
+
 export class GoogleCalendarService {
   private readonly tokenPath: string;
   private readonly calendarMapPath: string;
 
-  constructor(private readonly config: AppConfig) {
+  constructor(private readonly config: AppConfig, private readonly dependencies: GoogleCalendarDependencies = {}) {
     mkdirSync(config.dataDir, { recursive: true });
     this.tokenPath = join(config.dataDir, "google-oauth-token.json");
     this.calendarMapPath = join(config.dataDir, "google-calendar-map.json");
@@ -125,7 +132,7 @@ export class GoogleCalendarService {
 
   private async calendarExists(calendar: CalendarApi, calendarId: string): Promise<boolean> {
     try {
-      await calendar.calendars.get({ calendarId });
+      await this.request(() => calendar.calendars.get({ calendarId }));
       return true;
     } catch (error) {
       if (httpStatus(error) === 404) return false;
@@ -158,9 +165,9 @@ export class GoogleCalendarService {
   }
 
   private async createCalendar(calendar: CalendarApi, summary: string): Promise<string> {
-    const created = await calendar.calendars.insert({
+    const created = await this.writeRequest(() => calendar.calendars.insert({
       requestBody: { summary, timeZone: HELSINKI_TIME_ZONE },
-    });
+    }));
     if (!created.data.id) throw new Error("Google did not return a calendar id");
     return created.data.id;
   }
@@ -175,25 +182,27 @@ export class GoogleCalendarService {
     const bySource = new Map(existing.map((event) => [event.extendedProperties?.private?.familyWilmaSourceId, event]));
     const desiredSources = new Set(items.map((item) => item.sourceId));
     const counts = { created: 0, updated: 0, unchanged: 0, deleted: 0 };
-    await forEachConcurrent(items, 5, async (item) => {
+    await forEachConcurrent(items, 1, async (item) => {
       const desired = this.eventFor(item);
       const event = bySource.get(item.sourceId);
       if (!event?.id) {
-        await calendar.events.insert({ calendarId, requestBody: desired });
+        await this.writeRequest(() => calendar.events.insert({ calendarId, requestBody: desired }));
         counts.created += 1;
       } else if (this.sameEvent(event, desired)) {
         counts.unchanged += 1;
       } else {
-        await calendar.events.update({ calendarId, eventId: event.id, requestBody: desired });
+        const eventId = event.id;
+        await this.writeRequest(() => calendar.events.update({ calendarId, eventId, requestBody: desired }));
         counts.updated += 1;
       }
     });
     if (reconcileWindow) {
-      await forEachConcurrent(existing, 5, async (event) => {
+      await forEachConcurrent(existing, 1, async (event) => {
         const sourceId = event.extendedProperties?.private?.familyWilmaSourceId;
         const date = eventLocalDate(event);
         if (!event.id || !sourceId || desiredSources.has(sourceId) || !date || date < reconcileWindow.deleteFrom) return;
-        await calendar.events.delete({ calendarId, eventId: event.id });
+        const eventId = event.id;
+        await this.writeRequest(() => calendar.events.delete({ calendarId, eventId }));
         counts.deleted += 1;
       });
     }
@@ -204,7 +213,7 @@ export class GoogleCalendarService {
     const events: CalendarEvent[] = [];
     let pageToken: string | undefined;
     do {
-      const response = await calendar.events.list({
+      const response = await this.request(() => calendar.events.list({
         calendarId,
         privateExtendedProperty: [`familyWilmaManagedBy=${MANAGED_BY}`],
         singleEvents: true,
@@ -215,7 +224,7 @@ export class GoogleCalendarService {
           timeMin: `${window.start}T00:00:00Z`,
           timeMax: `${dayAfter(window.end)}T00:00:00Z`,
         } : {}),
-      });
+      }));
       events.push(...(response.data.items ?? []));
       pageToken = response.data.nextPageToken ?? undefined;
     } while (pageToken);
@@ -228,6 +237,29 @@ export class GoogleCalendarService {
       this.config.googleClientSecret,
       `${this.config.baseUrl}/oauth/google/callback`,
     );
+  }
+
+  private async writeRequest<T>(action: () => Promise<T>): Promise<T> {
+    await this.sleep(WRITE_INTERVAL_MS);
+    return await this.request(action);
+  }
+
+  private async request<T>(action: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await action();
+      } catch (error) {
+        if (!isRateLimitRejection(error) || attempt >= MAX_RATE_LIMIT_RETRIES) throw error;
+        const exponential = 2 ** attempt * 1_000;
+        const jitter = Math.floor((this.dependencies.random?.() ?? Math.random()) * 1_000);
+        await this.sleep(Math.min(exponential + jitter, 32_000));
+      }
+    }
+  }
+
+  private async sleep(milliseconds: number): Promise<void> {
+    if (this.dependencies.sleep) return await this.dependencies.sleep(milliseconds);
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
   }
 
   private loadToken(): Record<string, unknown> | null {
@@ -377,6 +409,18 @@ function httpStatus(error: unknown): number | undefined {
 function isDefiniteRejection(error: unknown): boolean {
   const status = httpStatus(error);
   return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+function isRateLimitRejection(error: unknown): boolean {
+  const status = httpStatus(error);
+  if (status !== 403 && status !== 429) return false;
+  if (!error || typeof error !== "object") return status === 429;
+  const candidate = error as {
+    errors?: Array<{ reason?: unknown }>;
+    response?: { data?: { error?: { errors?: Array<{ reason?: unknown }> } } };
+  };
+  const reason = candidate.response?.data?.error?.errors?.[0]?.reason ?? candidate.errors?.[0]?.reason;
+  return status === 429 || reason === "rateLimitExceeded" || reason === "userRateLimitExceeded";
 }
 
 function parseProvisioning(value: unknown): CalendarMap["provisioning"] {
