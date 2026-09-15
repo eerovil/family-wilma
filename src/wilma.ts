@@ -1,4 +1,4 @@
-import { WilmaClient, type StudentInfo, type WilmaProfile } from "@wilm-ai/wilma-client";
+import { WilmaClient, type HomeworkItem, type StudentInfo, type WilmaProfile } from "@wilm-ai/wilma-client";
 import type { AppConfig, ProfileMapping, WilmaAccountConfig } from "./config.js";
 
 export class MfaCodeRequiredError extends Error {
@@ -17,6 +17,12 @@ export interface FetchedMessage {
   sender: string;
   sentAt: Date;
   content: string;
+}
+
+export interface FetchedHomework extends HomeworkItem {
+  accountId: string;
+  studentNumber: string;
+  child: string;
 }
 
 export interface SourceCalendarItem {
@@ -69,6 +75,28 @@ export class WilmaService {
     return WilmaClient.listStudents(this.baseProfile(account), this.mfaCallback(account));
   }
 
+  async fetchHomework(): Promise<FetchedHomework[]> {
+    const homework: FetchedHomework[] = [];
+    for (const account of this.config.wilmaAccounts) {
+      const profiles = await this.profilesForAccount(account);
+      for (const profile of profiles) {
+        const client = await this.clientForFetch(account, profile);
+        const overview = await client.overview.get();
+        homework.push(...overview.homework.map((item) => ({
+          ...item,
+          accountId: account.id,
+          studentNumber: profile.studentNumber,
+          child: profile.child,
+        })));
+      }
+    }
+    homework.sort((left, right) => right.date.localeCompare(left.date)
+      || left.child.localeCompare(right.child, "fi")
+      || left.subject.localeCompare(right.subject, "fi"));
+    this.clearCompletedFetchState();
+    return homework;
+  }
+
   async fetchAll(options: { sentAfter?: Date; includeLessons?: boolean } = {}): Promise<WilmaBundle> {
     const messages: FetchedMessage[] = [];
     const structuredCalendarItems: SourceCalendarItem[] = [];
@@ -77,12 +105,7 @@ export class WilmaService {
     const lessonWindow = options.includeLessons ? sixMonthLessonWindow(this.now()) : null;
     const scheduleDates = lessonWindow ? weeklyDates(lessonWindow.start, lessonWindow.end) : [];
     for (const account of this.config.wilmaAccounts) {
-      const discovered = await this.profilesForFetch(account);
-      const childOverrides = new Map(account.profiles.map((profile) => [profile.studentNumber, profile.child]));
-      const profiles = discovered.map((profile) => ({
-        studentNumber: profile.studentNumber,
-        child: childOverrides.get(profile.studentNumber) ?? (profile.name.trim() || profile.studentNumber),
-      }));
+      const profiles = await this.profilesForAccount(account);
       for (const profile of profiles) {
         const client = await this.clientForFetch(account, profile);
         const listed = await client.messages.list("inbox");
@@ -145,9 +168,7 @@ export class WilmaService {
       }
     }
     messages.sort((a, b) => b.sentAt.getTime() - a.sentAt.getTime());
-    this.pendingDiscoveries.clear();
-    this.pendingClients.clear();
-    this.mfaCodes.clear();
+    this.clearCompletedFetchState();
     const lessonCalendars = [...lessonItemsByChild.entries()]
       .sort(([left], [right]) => left.localeCompare(right, "fi"))
       .map(([child, items]) => ({
@@ -160,6 +181,21 @@ export class WilmaService {
         reconcile: items.size > 0 && lessonReconcileByChild.get(child) === true,
       }));
     return { messages, structuredCalendarItems, lessonCalendars, lessonWindow };
+  }
+
+  private async profilesForAccount(account: WilmaAccountConfig): Promise<ProfileMapping[]> {
+    const discovered = await this.profilesForFetch(account);
+    const childOverrides = new Map(account.profiles.map((profile) => [profile.studentNumber, profile.child]));
+    return discovered.map((profile) => ({
+      studentNumber: profile.studentNumber,
+      child: childOverrides.get(profile.studentNumber) ?? (profile.name.trim() || profile.studentNumber),
+    }));
+  }
+
+  private clearCompletedFetchState(): void {
+    this.pendingDiscoveries.clear();
+    this.pendingClients.clear();
+    this.mfaCodes.clear();
   }
 
   private async profilesForFetch(account: WilmaAccountConfig): Promise<StudentInfo[]> {

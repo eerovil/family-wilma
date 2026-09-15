@@ -4,6 +4,44 @@ import { WilmaClient, type WilmaProfile } from "@wilm-ai/wilma-client";
 import type { AppConfig } from "./config.js";
 import { MfaCodeRequiredError, WilmaService } from "./wilma.js";
 
+test("homework fetch combines every child into one newest-first list", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  WilmaClient.listStudents = async () => [
+    { studentNumber: "101", name: "First Child", href: "/profiles/101" },
+    { studentNumber: "202", name: "Second Child", href: "/profiles/202" },
+  ];
+  WilmaClient.login = async (profile) => ({
+    overview: {
+      get: async () => ({
+        homework: profile.studentNumber === "101"
+          ? [{ date: "2026-09-14", subject: "Math", subjectCode: "MA", homework: "Older", teacher: "A", teacherCode: "A" }]
+          : [{ date: "2026-09-15", subject: "Finnish", subjectCode: "FI", homework: "Newest", teacher: "B", teacherCode: "B" }],
+      }),
+    },
+  }) as unknown as WilmaClient;
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [{ studentNumber: "202", child: "Preferred Second" }],
+    }],
+  } as unknown as AppConfig;
+
+  try {
+    const result = await new WilmaService(config).fetchHomework();
+    assert.deepEqual(result.map((item) => [item.date, item.child, item.homework]), [
+      ["2026-09-15", "Preferred Second", "Newest"],
+      ["2026-09-14", "First Child", "Older"],
+    ]);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
+
 test("message fetch discovers every Wilma profile and uses optional child-name overrides", async () => {
   const originalListStudents = WilmaClient.listStudents;
   const originalLogin = WilmaClient.login;

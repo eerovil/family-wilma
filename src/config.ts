@@ -21,6 +21,8 @@ export interface AppConfig {
   googleClientId: string;
   googleClientSecret: string;
   googleAllowedEmail: string;
+  pedanetHomeworkUrl: string | null;
+  pedanetHomeworkModuleId: string | null;
   wilmaAccounts: WilmaAccountConfig[];
 }
 
@@ -99,6 +101,8 @@ export function loadConfig(): AppConfig {
     googleClientId: required("GOOGLE_CLIENT_ID"),
     googleClientSecret: required("GOOGLE_CLIENT_SECRET"),
     googleAllowedEmail: required("GOOGLE_ALLOWED_EMAIL").toLowerCase(),
+    pedanetHomeworkUrl: process.env.PEDANET_HOMEWORK_URL?.trim() || null,
+    pedanetHomeworkModuleId: process.env.PEDANET_HOMEWORK_MODULE_ID?.trim() || null,
     wilmaAccounts: parseAccounts(),
   };
 }

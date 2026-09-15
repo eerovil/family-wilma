@@ -2,10 +2,17 @@
 
 Family Wilma is a small self-hosted app for one household. It combines messages from several Wilma accounts into one view, uses Claude Sonnet to pull out calendar-worthy information, highlights messages that contain important non-calendar content, and syncs dated items to Google Calendar.
 
-The normal daily-use screen intentionally has only two primary actions:
+The normal daily-use screen intentionally has three primary actions:
 
+- **Kotitehtävät**
 - **Näytä viimeiset 30 päivää**
 - **Synkkaa kalenteriin**
+
+**Kotitehtävät** reads each discovered child's Wilma overview and presents one combined
+chronological list, newest first. Nothing is grouped or stored locally. The card at the top
+also reads Einari's latest dated homework block from the configured public Peda.net class page.
+If that page contains alternatives for different groups, they are shown verbatim rather than
+guessed. A Peda.net failure affects only that card; Wilma homework remains available.
 
 Recent messages load through one in-process background job so a large inbox cannot hold the
 browser request open. Opening the message list only reads Wilma: it never starts AI analysis.

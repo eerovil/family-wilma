@@ -5,6 +5,8 @@ import { loadConfig } from "./config.js";
 test("Wilma accounts do not require manual profile mappings", () => {
   const previous = { ...process.env };
   try {
+    delete process.env.PEDANET_HOMEWORK_URL;
+    delete process.env.PEDANET_HOMEWORK_MODULE_ID;
     Object.assign(process.env, {
       ANTHROPIC_API_KEY: "test",
       GOOGLE_CLIENT_ID: "test-client",
@@ -20,6 +22,8 @@ test("Wilma accounts do not require manual profile mappings", () => {
 
     const config = loadConfig();
     assert.equal(config.analysisMode, "anthropic");
+    assert.equal(config.pedanetHomeworkUrl, null);
+    assert.equal(config.pedanetHomeworkModuleId, null);
     assert.deepEqual(config.wilmaAccounts[0]?.profiles, []);
   } finally {
     process.env = previous;

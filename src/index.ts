@@ -10,10 +10,12 @@ import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
 import { MESSAGE_CARD_CSS, renderMessageCard } from "./message-view.js";
 import { AnalysisStore, type CalendarItem } from "./store.js";
-import { MfaCodeRequiredError, WilmaService, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
+import { MfaCodeRequiredError, WilmaService, type FetchedHomework, type FetchedMessage, type SourceCalendarItem } from "./wilma.js";
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
 import { CalendarSyncJob, type CalendarSyncSnapshot } from "./calendar-sync.js";
 import { configureErrorReportingSecrets, flushErrorReporting, initializeErrorReporting, reportError } from "./telemetry.js";
+import { PedanetHomeworkService, type PedanetHomework } from "./pedanet-homework.js";
+import { HOMEWORK_VIEW_CSS, renderHomeworkContent } from "./homework-view.js";
 
 initializeErrorReporting({
   dsn: process.env.SENTRY_DSN,
@@ -45,6 +47,9 @@ const batches: AnalysisBatchAdapter = config.analysisMode === "manual"
   ? new ManualAnalysisAdapter(config.dataDir, store)
   : new AnalysisBatchService(store, analyzer, anthropic!);
 const wilma = new WilmaService(config);
+const pedanetHomework = config.pedanetHomeworkUrl && config.pedanetHomeworkModuleId
+  ? new PedanetHomeworkService(config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId)
+  : null;
 const calendar = new GoogleCalendarService(config);
 const sessions = new SessionStore(config.dataDir);
 const secureCookies = config.baseUrl.startsWith("https://");
@@ -86,7 +91,7 @@ function layout(title: string, body: string, head = ""): string {
 <html lang="fi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>${escapeHtml(title)}</title>${head}<style>
 :root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}button:disabled{background:#94a3b8;cursor:wait}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}${MESSAGE_CARD_CSS}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
-</style></head><body><main class="wrap">${body}</main></body></html>`;
+</style><style>${HOMEWORK_VIEW_CSS}</style></head><body><main class="wrap">${body}</main></body></html>`;
 }
 
 function home(): string {
@@ -102,10 +107,41 @@ function home(): string {
   return layout("Family Wilma", `
 <h1>Family Wilma</h1>
 <div class="actions">
+  <a class="button" href="/homework">Kotitehtävät</a>
   <form method="post" action="/messages"><button type="submit">Näytä viimeiset 30 päivää</button></form>
   <form method="post" action="/calendar/sync">${syncButton}</form>
 </div>
 ${syncStatus.html}<p>${google} · <a class="toplink" href="/setup">Asetukset</a></p>`, syncStatus.refresh ? '<meta http-equiv="refresh" content="3">' : "");
+}
+
+async function homeworkPage(): Promise<string> {
+  const [wilmaResult, pedanetResult] = await Promise.allSettled([
+    wilma.fetchHomework(),
+    pedanetHomework ? pedanetHomework.latest() : Promise.resolve(null),
+  ]);
+  if (wilmaResult.status === "rejected" && wilmaResult.reason instanceof MfaCodeRequiredError) {
+    throw wilmaResult.reason;
+  }
+
+  let homework: FetchedHomework[] = [];
+  let wilmaError = false;
+  if (wilmaResult.status === "fulfilled") {
+    homework = wilmaResult.value;
+  } else {
+    wilmaError = true;
+    reportError(wilmaResult.reason, { operation: "homework.wilma.fetch" });
+  }
+
+  let peda: PedanetHomework | null = null;
+  let pedanetError = false;
+  if (pedanetResult.status === "fulfilled") {
+    peda = pedanetResult.value;
+  } else {
+    pedanetError = true;
+    reportError(pedanetResult.reason, { operation: "homework.pedanet.fetch" });
+  }
+
+  return layout("Kotitehtävät", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1>${renderHomeworkContent({ homework, wilmaError, pedanet: peda, pedanetError, pedanetSourceUrl: config.pedanetHomeworkUrl })}`);
 }
 
 function calendarSyncStatus(snapshot: CalendarSyncSnapshot): { html: string; refresh: boolean } {
@@ -277,6 +313,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (token) res.setHeader("set-cookie", sessionCookie(token, secureCookies));
 
     if (req.method === "GET" && url.pathname === "/") return send(res, 200, home());
+    if (req.method === "GET" && url.pathname === "/homework") return send(res, 200, await homeworkPage());
     if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage(config.googleAllowedEmail));
     if (req.method === "POST" && url.pathname === "/logout") {
       sessions.destroySession(token);
@@ -367,7 +404,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 function knownRoute(pathname: string): string {
   return new Set([
     "/", "/healthz", "/oauth/google/start", "/oauth/google/callback", "/setup",
-    "/logout", "/messages", "/messages/analyze", "/calendar/sync", "/mfa",
+    "/logout", "/homework", "/messages", "/messages/analyze", "/calendar/sync", "/mfa",
     "/setup/discover",
   ]).has(pathname) ? pathname : "unknown";
 }

@@ -55,6 +55,7 @@ test("health stays public while application pages require Google sign-in", async
 
     for (const [method, path] of [
       ["GET", "/"],
+      ["GET", "/homework"],
       ["GET", "/setup"],
       ["GET", "/setup/discover?account=school"],
       ["POST", "/messages"],
@@ -94,6 +95,12 @@ test("health stays public while application pages require Google sign-in", async
     });
     assert.equal(signedIn.status, 200);
     assert.match(await signedIn.text(), /Kirjaudu ulos/);
+
+    const signedInHome = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: { cookie: `family_wilma_session=${token}` },
+    });
+    assert.equal(signedInHome.status, 200);
+    assert.match(await signedInHome.text(), /href="\/homework">Kotitehtävät/);
 
     const startedAt = Date.now();
     const startMessages = await fetch(`http://127.0.0.1:${port}/messages`, {

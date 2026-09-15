@@ -21,6 +21,7 @@
     "@googleapis/calendar": "^19.0.0",
     "@sentry/node": "^10.74.0",
     "@wilm-ai/wilma-client": "^1.5.2",
+    "cheerio": "^1.2.0",
     "google-auth-library": "^11.0.2"
   },
   "devDependencies": {
