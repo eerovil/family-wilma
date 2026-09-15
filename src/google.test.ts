@@ -104,6 +104,7 @@ test("allowed Google sign-in preserves an existing refresh token", async () => {
       refresh_token: "keep-me",
       access_token: "old",
       family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
     }));
     (calendar as unknown as { oauth: () => FakeOauthClient }).oauth = () => ({
       async getToken() {
@@ -123,6 +124,7 @@ test("allowed Google sign-in preserves an existing refresh token", async () => {
       access_token: "new",
       id_token: "verified-id-token",
       family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
     });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
@@ -133,7 +135,11 @@ test("an allowed household member can sign in without replacing owner Calendar c
   const { calendar, dataDir } = service(["eero@example.com", "anna@example.com"]);
   try {
     const tokenPath = join(dataDir, "google-oauth-token.json");
-    const original = JSON.stringify({ refresh_token: "owner-refresh", family_wilma_calendar_scope: "calendar.app.created+calendar.acls" });
+    const original = JSON.stringify({
+      refresh_token: "owner-refresh",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
+    });
     writeFileSync(tokenPath, original);
     (calendar as unknown as { oauth: () => FakeOauthClient }).oauth = () => ({
       async getToken() { return { tokens: { id_token: "verified-id-token", access_token: "member-access" } }; },
@@ -170,14 +176,71 @@ test("all managed calendars are shared with household members exactly once", asy
     },
   };
   try {
-    const internals = calendar as unknown as { ensureCalendarSharing(api: unknown, ids: string[]): Promise<void> };
-    await internals.ensureCalendarSharing(fakeApi, ["shared", "einari", "valtteri"]);
-    await internals.ensureCalendarSharing(fakeApi, ["shared", "einari", "valtteri"]);
+    const internals = calendar as unknown as {
+      ensureCalendarSharing(api: unknown, ids: string[], previous: string[]): Promise<string[]>;
+    };
+    assert.deepEqual(await internals.ensureCalendarSharing(fakeApi, ["shared", "einari", "valtteri"], []), ["anna@example.com"]);
+    assert.deepEqual(await internals.ensureCalendarSharing(
+      fakeApi, ["shared", "einari", "valtteri"], ["anna@example.com"],
+    ), ["anna@example.com"]);
     assert.deepEqual(inserts, [
       { calendarId: "shared", email: "anna@example.com", role: "reader" },
       { calendarId: "einari", email: "anna@example.com", role: "reader" },
       { calendarId: "valtteri", email: "anna@example.com", role: "reader" },
     ]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("calendar sharing removes former members and reconciles current members to read-only", async () => {
+  const { calendar, dataDir } = service(["eero@example.com", "anna@example.com"]);
+  const updated: string[] = [];
+  const deleted: string[] = [];
+  const fakeApi = {
+    acl: {
+      list: async () => ({ data: { items: [
+        { id: "anna-rule", role: "writer", scope: { type: "user", value: "anna@example.com" } },
+        { id: "old-rule", role: "reader", scope: { type: "user", value: "old@example.com" } },
+      ] } }),
+      insert: async () => { throw new Error("unexpected ACL insert"); },
+      update: async ({ ruleId, requestBody }: { ruleId: string; requestBody: { role: string } }) => {
+        updated.push(`${ruleId}:${requestBody.role}`);
+        return { data: {} };
+      },
+      delete: async ({ ruleId }: { ruleId: string }) => {
+        deleted.push(ruleId);
+        return { data: {} };
+      },
+    },
+  };
+  try {
+    const internals = calendar as unknown as {
+      ensureCalendarSharing(api: unknown, ids: string[], previous: string[]): Promise<string[]>;
+    };
+    assert.deepEqual(await internals.ensureCalendarSharing(
+      fakeApi, ["shared"], ["anna@example.com", "old@example.com"],
+    ), ["anna@example.com"]);
+    assert.deepEqual(updated, ["anna-rule:reader"]);
+    assert.deepEqual(deleted, ["old-rule"]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("Calendar credentials are bound to the configured owner", async () => {
+  const { calendar, dataDir } = service();
+  try {
+    writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
+      access_token: "old-owner-token",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "previous-owner@example.com",
+    }));
+    assert.equal(calendar.isConnected(), false);
+    await assert.rejects(calendar.sync({
+      sharedItems: [], lessonCalendars: [],
+      lessonWindow: { start: "2026-09-14", end: "2027-03-15", deleteFrom: "2026-09-15" },
+    }), /not connected/);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -261,6 +324,7 @@ test("sync creates owned calendars, routes lessons separately, and removes stale
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
       family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
     }));
     (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
       setCredentials() {},
@@ -438,6 +502,7 @@ test("calendar writes are paced and retry only explicit rate-limit rejections", 
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
       family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
     }));
     writeFileSync(join(dataDir, "google-calendar-map.json"), JSON.stringify({
       shared: "calendar", lessons: {}, provisioning: null,
@@ -485,6 +550,7 @@ test("sync fails closed on a corrupt calendar map", async () => {
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
       family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
     }));
     writeFileSync(join(dataDir, "google-calendar-map.json"), "{");
     (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
@@ -512,6 +578,7 @@ test("sync recreates confirmed deleted mapped calendars", async () => {
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
       family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
     }));
     writeFileSync(join(dataDir, "google-calendar-map.json"), JSON.stringify({
       shared: "deleted-shared",
@@ -547,7 +614,7 @@ test("sync recreates confirmed deleted mapped calendars", async () => {
     });
     assert.deepEqual(created, ["Family Wilma – yhteiset", "Child – Lukujärjestys"]);
     assert.deepEqual(JSON.parse(readFileSync(join(dataDir, "google-calendar-map.json"), "utf8")), {
-      shared: "new-1", lessons: { Child: "new-2" }, provisioning: null,
+      shared: "new-1", lessons: { Child: "new-2" }, sharedWith: [], provisioning: null,
     });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
@@ -561,6 +628,7 @@ test("an uncertain calendar creation is not retried automatically", async () => 
     writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
       access_token: "test",
       family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
     }));
     (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
       setCredentials() {},

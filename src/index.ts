@@ -379,7 +379,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return redirect(res, `/oauth/google/start?returnTo=${encodeURIComponent(returnTo)}`);
     }
     const email = sessions.sessionEmail(token);
-    if (!email) {
+    if (!email || !config.googleAllowedLoginEmails.includes(email)) {
+      sessions.destroySession(token);
       res.setHeader("set-cookie", clearSessionCookie(secureCookies));
       return redirect(res, `/oauth/google/start?returnTo=${encodeURIComponent(url.pathname)}`);
     }

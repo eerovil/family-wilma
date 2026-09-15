@@ -31,6 +31,7 @@ export interface CalendarSyncResult {
 interface CalendarMap {
   shared: string | null;
   lessons: Record<string, string>;
+  sharedWith: string[];
   provisioning: { kind: "shared" } | { kind: "lesson"; child: string } | null;
 }
 
@@ -62,7 +63,9 @@ export class GoogleCalendarService {
   }
 
   isConnected(): boolean {
-    return this.loadToken()?.family_wilma_calendar_scope === SCOPE_MARKER;
+    const token = this.loadToken();
+    return token?.family_wilma_calendar_scope === SCOPE_MARKER
+      && token.family_wilma_calendar_owner === this.config.googleAllowedEmail;
   }
 
   async handleCallback(code: string, purpose: OAuthPurpose = "calendar"): Promise<string> {
@@ -83,17 +86,24 @@ export class GoogleCalendarService {
       throw new Error("Google Calendar permission was not granted");
     }
     const previous = this.loadToken();
-    if (previous?.family_wilma_calendar_scope !== SCOPE_MARKER && !tokens.refresh_token) {
+    const reusable = previous?.family_wilma_calendar_scope === SCOPE_MARKER
+      && previous.family_wilma_calendar_owner === email ? previous : null;
+    if (!reusable && !tokens.refresh_token) {
       throw new Error("Google did not return a refresh token for the calendar permission");
     }
-    const merged = { ...(previous ?? {}), ...tokens, family_wilma_calendar_scope: SCOPE_MARKER };
+    const merged = {
+      ...(reusable ?? {}),
+      ...tokens,
+      family_wilma_calendar_scope: SCOPE_MARKER,
+      family_wilma_calendar_owner: email,
+    };
     writeFileSync(this.tokenPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
     return email;
   }
 
   async sync(plan: CalendarSyncPlan): Promise<CalendarSyncResult> {
     const token = this.loadToken();
-    if (!token) throw new Error("Google Calendar is not connected");
+    if (!token || !this.isConnected()) throw new Error("Google Calendar is not connected");
     const auth = this.oauth();
     auth.setCredentials(token);
     auth.on("tokens", (tokens) => {
@@ -102,7 +112,13 @@ export class GoogleCalendarService {
     });
     const calendar = this.api(auth);
     const ids = await this.ensureCalendars(calendar, plan.lessonCalendars.map((entry) => entry.child));
-    await this.ensureCalendarSharing(calendar, [ids.shared, ...Object.values(ids.lessons)]);
+    const mapping = this.loadCalendarMap();
+    mapping.sharedWith = await this.ensureCalendarSharing(
+      calendar,
+      [ids.shared, ...Object.values(ids.lessons)],
+      mapping.sharedWith,
+    );
+    this.saveCalendarMap(mapping);
     const totals = { created: 0, updated: 0, unchanged: 0, deleted: 0 };
     addCounts(totals, await this.syncCalendar(
       calendar,
@@ -159,9 +175,14 @@ export class GoogleCalendarService {
     }
   }
 
-  private async ensureCalendarSharing(calendar: CalendarApi, calendarIds: string[]): Promise<void> {
+  private async ensureCalendarSharing(
+    calendar: CalendarApi,
+    calendarIds: string[],
+    previouslySharedWith: string[],
+  ): Promise<string[]> {
     const recipients = this.config.googleAllowedLoginEmails.filter((email) => email !== this.config.googleAllowedEmail);
-    if (!recipients.length) return;
+    const removedRecipients = previouslySharedWith.filter((email) => !recipients.includes(email));
+    if (!recipients.length && !removedRecipients.length) return recipients;
     for (const calendarId of [...new Set(calendarIds)]) {
       const rules: calendar_v3.Schema$AclRule[] = [];
       let pageToken: string | undefined;
@@ -174,11 +195,19 @@ export class GoogleCalendarService {
         rules.push(...(response.data.items ?? []));
         pageToken = response.data.nextPageToken ?? undefined;
       } while (pageToken);
+      for (const email of removedRecipients) {
+        const existing = rules.find((rule) =>
+          rule.scope?.type === "user" && rule.scope.value?.toLowerCase() === email,
+        );
+        if (existing?.id && existing.role !== "owner") {
+          await this.writeRequest(() => calendar.acl.delete({ calendarId, ruleId: existing.id! }));
+        }
+      }
       for (const email of recipients) {
         const existing = rules.find((rule) =>
           rule.scope?.type === "user" && rule.scope.value?.toLowerCase() === email,
         );
-        if (existing?.role === "reader" || existing?.role === "writer" || existing?.role === "owner") continue;
+        if (existing?.role === "reader" || existing?.role === "owner") continue;
         if (existing?.id) {
           await this.writeRequest(() => calendar.acl.update({
             calendarId,
@@ -194,6 +223,7 @@ export class GoogleCalendarService {
         }
       }
     }
+    return recipients;
   }
 
   private async provisionCalendar(
@@ -410,15 +440,24 @@ export class GoogleCalendarService {
         || Object.values(candidate.lessons).some((value) => typeof value !== "string"))) {
         throw new Error("Invalid lesson calendar ids in Google calendar map");
       }
+      if (candidate.sharedWith !== undefined && (!Array.isArray(candidate.sharedWith)
+        || candidate.sharedWith.some((value) => typeof value !== "string"))) {
+        throw new Error("Invalid shared recipients in Google calendar map");
+      }
       const provisioning = parseProvisioning(candidate.provisioning);
       const lessons = Object.assign(Object.create(null) as Record<string, string>,
         candidate.lessons && typeof candidate.lessons === "object" && !Array.isArray(candidate.lessons)
           ? Object.fromEntries(Object.entries(candidate.lessons).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
           : {});
-      return { shared: typeof candidate.shared === "string" ? candidate.shared : null, lessons, provisioning };
+      return {
+        shared: typeof candidate.shared === "string" ? candidate.shared : null,
+        lessons,
+        sharedWith: candidate.sharedWith?.map((email) => email.toLowerCase()) ?? [],
+        provisioning,
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      return { shared: null, lessons: Object.create(null) as Record<string, string>, provisioning: null };
+      return { shared: null, lessons: Object.create(null) as Record<string, string>, sharedWith: [], provisioning: null };
     }
   }
 

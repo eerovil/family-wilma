@@ -127,7 +127,18 @@ test("health stays public while application pages require Google sign-in", async
       INSERT INTO user_sessions (token_hash, expires_at, created_at, last_seen_at, email)
       VALUES (?, ?, ?, ?, ?)
     `).run(createHash("sha256").update(token).digest("hex"), now + 3600, now, now, "owner@example.com");
+    db.prepare(`
+      INSERT INTO user_sessions (token_hash, expires_at, created_at, last_seen_at, email)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(createHash("sha256").update("removed-member-token").digest("hex"), now + 3600, now, now, "removed@example.com");
     db.close();
+
+    const removedMember = await fetch(`http://127.0.0.1:${port}/setup`, {
+      headers: { cookie: "family_wilma_session=removed-member-token" },
+      redirect: "manual",
+    });
+    assert.equal(removedMember.status, 303);
+    assert.match(removedMember.headers.get("location") ?? "", /^\/oauth\/google\/start/);
 
     const signedIn = await fetch(`http://127.0.0.1:${port}/setup`, {
       headers: { cookie: `family_wilma_session=${token}` },
