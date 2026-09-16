@@ -110,6 +110,10 @@ to 24 hours; its persisted status is refreshed when the message page is opened. 
 starts only after those message analyses have reached a terminal state. Opening or refreshing the
 page never submits analysis requests.
 
+When nothing needs analysing the same button reads **Synkkaa kalenteri** and stays usable: it
+runs the calendar sync alone, which is the only way an unchecked calendar item or exam reaches
+Google. It submits no analysis requests and therefore costs nothing.
+
 Each logical result is cached in SQLite by the exact sender, subject, body, Helsinki date, and
 analyzer version. Existing per-child cache entries are reused and promoted when matching messages
 are first merged, so this change does not trigger a second analysis charge. An unchanged or
@@ -243,7 +247,8 @@ manually.
 Every message-derived item and every exam has a checkbox: under **Kalenteriin:** on the message
 view, and in the **Kokeet** section of **Kotitehtävät**. Unchecking one drops it — the next sync
 neither writes it nor leaves an event it wrote earlier, and re-checking the same box brings it
-back. Dropping is by source id, so it survives re-analysis of the same message and a Wilma
+back. The box saves immediately, but nothing reaches Google until the next sync, which only
+the message view's sync button starts. Dropping is by source id, so it survives re-analysis of the same message and a Wilma
 refetch of the same exam. Lessons have no checkbox: they are reconciled against Wilma on every
 sync, which would overwrite a drop.
 

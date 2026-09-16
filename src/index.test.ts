@@ -216,14 +216,16 @@ test("health stays public while application pages require Google sign-in", async
       headers: { cookie: `family_wilma_session=${token}` },
     });
     assert.equal(analyzedMessages.status, 200);
-    assert.match(await analyzedMessages.text(), /<button type="submit" disabled>Kaikki viestit analysoitu<\/button>/);
-    const redundantAnalysis = await fetch(`http://127.0.0.1:${port}/messages/analyze`, {
+    // Nothing left to analyse still offers a sync: that is how a dropped
+    // calendar item reaches Google.
+    assert.match(await analyzedMessages.text(), /<button type="submit">Synkkaa kalenteri<\/button>/);
+    const syncOnly = await fetch(`http://127.0.0.1:${port}/messages/analyze`, {
       method: "POST",
       headers: { cookie: `family_wilma_session=${token}` },
       redirect: "manual",
     });
-    assert.equal(redundantAnalysis.status, 303);
-    assert.equal(redundantAnalysis.headers.get("location"), "/messages");
+    assert.equal(syncOnly.status, 303);
+    assert.equal(syncOnly.headers.get("location"), "/oauth/google/calendar/start?returnTo=%2Fmessages");
 
     const logout = await fetch(`http://127.0.0.1:${port}/logout`, {
       method: "POST",

@@ -314,10 +314,10 @@ function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): str
     : '<button class="secondary" type="submit">Päivitä viestit</button>';
   const groupedMessages = groupMessages(load.messages);
   const hasUnanalyzed = groupedMessages.some((message) => !analyzer.cached(message));
-  const analyzeDisabled = active || !hasUnanalyzed;
+  const analyzeDisabled = active;
   const analyzeLabel = hasUnanalyzed
     ? config.analysisMode === "manual" ? "Jonota kaikki ja synkkaa kalenteri" : "Analysoi kaikki ja synkkaa kalenteri"
-    : "Kaikki viestit analysoitu";
+    : "Synkkaa kalenteri";
   const analyzeButton = load.messages.length
     ? `<form method="post" action="/messages/analyze"><button type="submit"${analyzeDisabled ? " disabled" : ""}>${analyzeLabel}</button></form>`
     : "";
@@ -485,7 +485,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
       if (!load.messages.length) return send(res, 409, messageLoadingPage(load));
       const messages = groupMessages(load.messages);
-      if (messages.every((message) => Boolean(analyzer.cached(message)))) return redirect(res, "/messages");
+      // Syncing with nothing left to analyse is a real action, not a no-op: it is
+      // how an unchecked calendar item reaches Google.
       if (!calendar.isConnected()) {
         if (email !== config.googleAllowedEmail) {
           return send(res, 409, busyPage("Kalenterin omistajan pitää yhdistää Google Calendar ennen synkronointia."));
