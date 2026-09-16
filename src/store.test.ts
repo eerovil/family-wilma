@@ -59,14 +59,17 @@ test("analysis batches persist pending identities and import results idempotentl
     assert.equal(store.get(identity)?.hasOtherContent, true);
     assert.equal(store.hasPending(identity), false);
     assert.deepEqual(store.pendingBatches(), []);
-    assert.deepEqual(store.batchStatuses()[0], {
+    const status = store.batchStatuses()[0]!;
+    assert.deepEqual({ ...status, updatedAt: "valid" }, {
       batchId: "submission-1",
       status: "ended",
       total: 1,
       succeeded: 1,
       failed: 0,
       imported: 1,
+      updatedAt: "valid",
     });
+    assert.ok(Number.isFinite(Date.parse(status.updatedAt)));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

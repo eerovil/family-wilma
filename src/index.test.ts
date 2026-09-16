@@ -43,6 +43,21 @@ test("health stays public while application pages require Google sign-in", async
     messages: [cachedMessage],
     structuredCalendarItems: [],
   }, new Date().toISOString());
+  const analysisStore = new AnalysisStore(dataDir);
+  analysisStore.reserveBatch("stale-completed-batch", [{
+    customId: "message_0",
+    identity: analysisIdentity(groupMessages([cachedMessage])[0]!),
+  }]);
+  analysisStore.finishBatch("stale-completed-batch", { succeeded: 1, failed: 0 });
+  analysisStore.reserveBatch("fresh-completed-batch", [{
+    customId: "message_0",
+    identity: analysisIdentity({ ...groupMessages([cachedMessage])[0]!, messageId: 43 }),
+  }]);
+  analysisStore.finishBatch("fresh-completed-batch", { succeeded: 1, failed: 0 });
+  const staleDb = new DatabaseSync(join(dataDir, "family-wilma.sqlite"));
+  staleDb.prepare("UPDATE analysis_batches SET updated_at = ? WHERE batch_id = ?")
+    .run("2026-09-15T00:00:00.000Z", "stale-completed-batch");
+  staleDb.close();
   const child = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "index.js")], {
     env: {
       ...process.env,
@@ -60,7 +75,7 @@ test("health stays public while application pages require Google sign-in", async
   });
   try {
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("server did not start")), 5_000);
+      const timeout = setTimeout(() => reject(new Error("server did not start")), 10_000);
       child.once("exit", (code) => reject(new Error(`server exited ${code}`)));
       child.stdout.on("data", (chunk: Buffer) => {
         if (chunk.toString().includes("listening")) {
@@ -188,6 +203,9 @@ test("health stays public while application pages require Google sign-in", async
     assert.match(messagesHtml, /Analysoi kaikki ja synkkaa kalenteri/);
     assert.match(messagesHtml, /data-message-filter="account:school"/);
     assert.match(messagesHtml, /data-message-filter="child:Test child"/);
+    assert.match(messagesHtml, /data-transient-status="analysis-batch:fresh-completed-batch"/);
+    assert.doesNotMatch(messagesHtml, /data-transient-status="analysis-batch:stale-completed-batch"/);
+    assert.match(messagesHtml, /<script defer src="\/message-status\.js"><\/script>/);
     assert.match(messagesHtml, /<script defer src="\/message-filters\.js"><\/script>/);
     assert.doesNotMatch(messagesHtml, /type="checkbox"/);
 

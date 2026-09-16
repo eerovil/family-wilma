@@ -7,6 +7,7 @@ export interface AnalyzeSyncSnapshot {
   result: CalendarSyncResult | null;
   error: string | null;
   mfaAccountId: string | null;
+  finishedAt: string | null;
 }
 
 interface AnalyzeSyncDependencies {
@@ -18,6 +19,7 @@ interface AnalyzeSyncDependencies {
   pause?(): Promise<void>;
   mfaAccountId?(error: unknown): string | null;
   reportError?(error: unknown): void;
+  now?(): Date;
 }
 
 export class AnalyzeSyncJob {
@@ -27,6 +29,7 @@ export class AnalyzeSyncJob {
     result: null,
     error: null,
     mfaAccountId: null,
+    finishedAt: null,
   };
 
   constructor(private readonly dependencies: AnalyzeSyncDependencies) {}
@@ -39,6 +42,7 @@ export class AnalyzeSyncJob {
       result: null,
       error: null,
       mfaAccountId: null,
+      finishedAt: null,
     };
     this.current = this.run(copy).finally(() => { this.current = null; });
     return true;
@@ -54,7 +58,7 @@ export class AnalyzeSyncJob {
 
   claimMfa(accountId: string): boolean {
     if (this.current || this.status.state !== "mfa" || this.status.mfaAccountId !== accountId) return false;
-    this.status = { state: "idle", result: null, error: null, mfaAccountId: null };
+    this.status = { state: "idle", result: null, error: null, mfaAccountId: null, finishedAt: null };
     return true;
   }
 
@@ -74,11 +78,11 @@ export class AnalyzeSyncJob {
       }
       this.status = { ...this.status, state: "syncing" };
       const result = await this.dependencies.sync();
-      this.status = { state: "success", result, error: null, mfaAccountId: null };
+      this.status = { state: "success", result, error: null, mfaAccountId: null, finishedAt: this.now() };
     } catch (error) {
       const mfaAccountId = this.dependencies.mfaAccountId?.(error) ?? null;
       if (mfaAccountId) {
-        this.status = { state: "mfa", result: null, error: null, mfaAccountId };
+        this.status = { state: "mfa", result: null, error: null, mfaAccountId, finishedAt: null };
         return;
       }
       this.dependencies.reportError?.(error);
@@ -87,7 +91,12 @@ export class AnalyzeSyncJob {
         result: null,
         error: "Analysointi tai kalenterin synkronointi epäonnistui. Yritä uudelleen.",
         mfaAccountId: null,
+        finishedAt: this.now(),
       };
     }
+  }
+
+  private now(): string {
+    return (this.dependencies.now?.() ?? new Date()).toISOString();
   }
 }

@@ -21,6 +21,7 @@ import { HomeworkRefreshJob, type HomeworkRefreshSnapshot } from "./homework-ref
 import { MessageCacheStore } from "./message-cache.js";
 import { groupMessages, type GroupedMessage } from "./message-group.js";
 import { messageCalendarProjection, type AnalyzedMessage } from "./message-calendar.js";
+import { transientStatus } from "./message-status.js";
 import { THEME_COLOR } from "./pwa-content.js";
 import { pwaAsset } from "./pwa.js";
 
@@ -110,6 +111,13 @@ const analyzeSync = new AnalyzeSyncJob({
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char);
+}
+
+function transientBanner(id: string, finishedAt: string | null, className: "error" | "success", content: string): string {
+  const status = transientStatus(id, finishedAt);
+  return status
+    ? `<div class="${className}" data-transient-status="${escapeHtml(status.id)}" data-status-hide-after="${status.hideAfterMs}">${content}</div>`
+    : "";
 }
 
 function layout(title: string, body: string, head = ""): string {
@@ -217,12 +225,15 @@ function analyzeSyncStatus(snapshot: AnalyzeSyncSnapshot): { html: string; refre
   if (snapshot.state === "success" && snapshot.result) {
     const result = snapshot.result;
     return {
-      html: `<div class="success">Synkronointi valmis: luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}.</div>`,
+      html: transientBanner(`analyze-sync:success:${snapshot.finishedAt ?? "unknown"}`, snapshot.finishedAt, "success", `Synkronointi valmis: luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}.`),
       refresh: false,
     };
   }
   if (snapshot.state === "error") {
-    return { html: `<div class="error">${escapeHtml(snapshot.error ?? "Analysointi tai kalenterin synkronointi epäonnistui.")}</div>`, refresh: false };
+    return {
+      html: transientBanner(`analyze-sync:error:${snapshot.finishedAt ?? "unknown"}`, snapshot.finishedAt, "error", escapeHtml(snapshot.error ?? "Analysointi tai kalenterin synkronointi epäonnistui.")),
+      refresh: false,
+    };
   }
   return { html: "", refresh: false };
 }
@@ -260,19 +271,21 @@ function messageCards(messages: GroupedMessage[]): string {
 function batchStatus(): { html: string; active: boolean } {
   const statuses = batches.statuses();
   const active = config.analysisMode === "anthropic" && statuses.some((status) => status.status === "in_progress");
-  const html = statuses.slice(0, 3).map((status) => {
+  const html = statuses.flatMap((status) => {
     if (status.status === "submitting") {
-      return config.analysisMode === "manual"
+      return [config.analysisMode === "manual"
         ? '<div class="error">Paikallisen analyysipyynnön tallennus jäi kesken.</div>'
-        : '<div class="error">Batch-lähetyksen tila jäi epävarmaksi. Viestejä ei lähetetä automaattisesti uudelleen.</div>';
+        : '<div class="error">Batch-lähetyksen tila jäi epävarmaksi. Viestejä ei lähetetä automaattisesti uudelleen.</div>'];
     }
     if (config.analysisMode === "manual" && status.status === "in_progress") {
-      return `<div class="card"><strong>Odottaa paikallista agenttianalyysiä</strong><p class="muted">${status.total} viestiä jonossa. Viestejä ei lähetetty Anthropic APIin.</p></div>`;
+      return [`<div class="card"><strong>Odottaa paikallista agenttianalyysiä</strong><p class="muted">${status.total} viestiä jonossa. Viestejä ei lähetetty Anthropic APIin.</p></div>`];
     }
-    return status.status === "in_progress"
-      ? `<div class="card"><strong>Batch-analyysi käynnissä</strong><p class="muted">${status.total} viestiä · valmiina ${status.succeeded + status.failed}/${status.total}</p></div>`
-      : `<div class="success">Batch-analyysi valmis: ${status.imported} analysoitu${status.failed ? `, ${status.failed} epäonnistui` : ""}.</div>`;
-  }).join("");
+    if (status.status === "in_progress") {
+      return [`<div class="card"><strong>Batch-analyysi käynnissä</strong><p class="muted">${status.total} viestiä · valmiina ${status.succeeded + status.failed}/${status.total}</p></div>`];
+    }
+    const completed = transientBanner(`analysis-batch:${status.batchId}`, status.updatedAt, "success", `Batch-analyysi valmis: ${status.imported} analysoitu${status.failed ? `, ${status.failed} epäonnistui` : ""}.`);
+    return completed ? [completed] : [];
+  }).slice(0, 3).join("");
   return { html, active };
 }
 
@@ -301,7 +314,7 @@ function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): str
   const filters = renderMessageFilters(groupedMessages);
   const cards = messageCards(groupedMessages) || '<p class="muted">Ei viestejä.</p>';
   return layout("Viimeiset 30 päivää", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viimeiset 30 päivää</h1>
-  <form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}${filters}${cards}<script defer src="/message-filters.js"></script>`,
+  <form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}${filters}${cards}<script defer src="/message-status.js"></script><script defer src="/message-filters.js"></script>`,
   active || batchesState.active ? '<meta http-equiv="refresh" content="5">' : "");
 }
 

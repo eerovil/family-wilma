@@ -30,6 +30,7 @@ test("service worker caches successful pages but never OAuth routes or writes", 
   assert.match(source, /url\.pathname === "\/homework"/);
   assert.ok(PUBLIC_PWA_PATHS.includes("/offline"));
   assert.ok(PUBLIC_PWA_PATHS.includes("/message-filters.js"));
+  assert.ok(PUBLIC_PWA_PATHS.includes("/message-status.js"));
 });
 
 test("client updates immediately without reloading its first service-worker claim", () => {
@@ -44,5 +45,6 @@ test("PWA assets are public-ready with exact response headers", () => {
   assert.equal(pwaAsset("/sw.js")?.headers["service-worker-allowed"], "/");
   assert.equal(pwaAsset("/icon-192.png")?.headers["content-type"], "image/png");
   assert.match(String(pwaAsset("/message-filters.js")?.headers["content-type"]), /text\/javascript/);
+  assert.match(String(pwaAsset("/message-status.js")?.headers["content-type"]), /text\/javascript/);
   assert.equal(pwaAsset("/missing"), null);
 });

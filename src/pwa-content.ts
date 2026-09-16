@@ -56,6 +56,7 @@ export const PUBLIC_PWA_PATHS = [
   "/offline",
   "/pwa.js",
   "/message-filters.js",
+  "/message-status.js",
   "/favicon.svg",
   "/icon-192.png",
   "/icon-512.png",

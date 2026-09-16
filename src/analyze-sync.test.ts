@@ -21,6 +21,7 @@ test("combined job analyzes every message before calendar sync", async () => {
     statuses: () => [],
     sync: async () => { states.push("sync"); syncCalls += 1; return result; },
     pause: async () => {},
+    now: () => new Date("2026-09-16T08:00:00.000Z"),
   });
 
   assert.equal(job.start([message, { ...message, messageId: 2 }]), true);
@@ -30,7 +31,7 @@ test("combined job analyzes every message before calendar sync", async () => {
   assert.deepEqual(submitted, [[1, 2]]);
   assert.deepEqual(states, ["refresh", "sync"]);
   assert.equal(syncCalls, 1);
-  assert.deepEqual(job.snapshot(), { state: "success", result, error: null, mfaAccountId: null });
+  assert.deepEqual(job.snapshot(), { state: "success", result, error: null, mfaAccountId: null, finishedAt: "2026-09-16T08:00:00.000Z" });
 });
 
 test("combined job refuses to sync an uncertain analysis submission", async () => {
@@ -40,7 +41,7 @@ test("combined job refuses to sync an uncertain analysis submission", async () =
     submit: async () => {},
     refresh: async () => {},
     pending: () => true,
-    statuses: () => [{ batchId: "uncertain", status: "submitting", total: 1, succeeded: 0, failed: 0, imported: 0 }],
+    statuses: () => [{ batchId: "uncertain", status: "submitting", total: 1, succeeded: 0, failed: 0, imported: 0, updatedAt: "2026-09-16T08:00:00.000Z" }],
     sync: async () => { syncCalls += 1; return result; },
     reportError: (error) => reported.push(error),
   });

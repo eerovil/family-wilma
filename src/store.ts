@@ -31,6 +31,7 @@ export interface AnalysisBatchStatus {
   succeeded: number;
   failed: number;
   imported: number;
+  updatedAt: string;
 }
 
 export interface PendingAnalysisBatch {
@@ -228,7 +229,7 @@ export class AnalysisStore {
 
   batchStatuses(): AnalysisBatchStatus[] {
     const rows = this.db.prepare(`
-      SELECT b.batch_id AS batchId, b.status, b.total, b.succeeded, b.failed,
+      SELECT b.batch_id AS batchId, b.status, b.total, b.succeeded, b.failed, b.updated_at AS updatedAt,
              COALESCE(SUM(i.imported), 0) AS imported
       FROM analysis_batches b
       LEFT JOIN analysis_batch_items i ON i.batch_id = b.batch_id
