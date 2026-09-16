@@ -62,10 +62,12 @@ test("merged message cards show every affected child once", () => {
   assert.match(filters, />Child<\/button>/);
   assert.match(filters, />Valtteri<\/button>/);
   assert.equal((filters.match(/data-message-filter="account:konservatorio"/g) ?? []).length, 1);
+  assert.equal((filters.match(/data-message-filter-kind="account"/g) ?? []).length, 2);
+  assert.equal((filters.match(/data-message-filter-kind="child"/g) ?? []).length, 2);
   assert.equal((filters.match(/aria-pressed="false"/g) ?? []).length, 4);
 });
 
-test("message filter client applies one global OR and defaults to all visible", () => {
+test("message filters OR within categories, AND between categories, and default to all visible", () => {
   class Element {
     hidden = false;
     readonly listeners: (() => void)[] = [];
@@ -77,31 +79,49 @@ test("message filter client applies one global OR and defaults to all visible", 
     }
     click(): void { this.listeners.forEach((listener) => listener()); }
   }
-  const school = new Element({ "data-message-filter": "account:school", "aria-pressed": "false" });
-  const einari = new Element({ "data-message-filter": "child:Einari", "aria-pressed": "false" });
+  const school = new Element({ "data-message-filter-kind": "account", "data-message-filter": "account:school", "aria-pressed": "false" });
+  const conservatory = new Element({ "data-message-filter-kind": "account", "data-message-filter": "account:konservatorio", "aria-pressed": "false" });
+  const einari = new Element({ "data-message-filter-kind": "child", "data-message-filter": "child:Einari", "aria-pressed": "false" });
+  const valtteri = new Element({ "data-message-filter-kind": "child", "data-message-filter": "child:Valtteri", "aria-pressed": "false" });
   const schoolCard = new Element({ "data-message-filters": JSON.stringify(["account:school", "child:Valtteri"]) });
-  const mergedCard = new Element({ "data-message-filters": JSON.stringify(["account:konservatorio", "child:Einari", "child:Valtteri"]) });
+  const conservatoryEinariCard = new Element({ "data-message-filters": JSON.stringify(["account:konservatorio", "child:Einari"]) });
+  const conservatoryValtteriCard = new Element({ "data-message-filters": JSON.stringify(["account:konservatorio", "child:Valtteri"]) });
   runInNewContext(MESSAGE_FILTER_CLIENT_SCRIPT, {
     document: {
       querySelectorAll: (selector: string) => selector === "[data-message-filter]"
-        ? [school, einari]
-        : [schoolCard, mergedCard],
+        ? [school, conservatory, einari, valtteri]
+        : [schoolCard, conservatoryEinariCard, conservatoryValtteriCard],
     },
   });
 
   assert.equal(schoolCard.hidden, false);
-  assert.equal(mergedCard.hidden, false);
+  assert.equal(conservatoryEinariCard.hidden, false);
+  assert.equal(conservatoryValtteriCard.hidden, false);
   school.click();
   assert.equal(schoolCard.hidden, false);
-  assert.equal(mergedCard.hidden, true);
+  assert.equal(conservatoryEinariCard.hidden, true);
+  assert.equal(conservatoryValtteriCard.hidden, true);
+  conservatory.click();
+  assert.equal(schoolCard.hidden, false, "accounts are ORed within their category");
+  assert.equal(conservatoryEinariCard.hidden, false);
+  assert.equal(conservatoryValtteriCard.hidden, false);
   einari.click();
-  assert.equal(schoolCard.hidden, false);
-  assert.equal(mergedCard.hidden, false, "a child match is ORed with an account match");
+  assert.equal(schoolCard.hidden, true, "an account match must also match the selected child category");
+  assert.equal(conservatoryEinariCard.hidden, false);
+  assert.equal(conservatoryValtteriCard.hidden, true);
+  valtteri.click();
+  assert.equal(schoolCard.hidden, false, "children are ORed within their category");
+  assert.equal(conservatoryEinariCard.hidden, false);
+  assert.equal(conservatoryValtteriCard.hidden, false);
   school.click();
   assert.equal(schoolCard.hidden, true);
-  assert.equal(mergedCard.hidden, false);
+  assert.equal(conservatoryEinariCard.hidden, false);
+  assert.equal(conservatoryValtteriCard.hidden, false);
   einari.click();
+  valtteri.click();
+  conservatory.click();
   assert.equal(schoolCard.hidden, false, "clearing all pills restores every card");
-  assert.equal(mergedCard.hidden, false);
+  assert.equal(conservatoryEinariCard.hidden, false);
+  assert.equal(conservatoryValtteriCard.hidden, false);
   assert.match(MESSAGE_CARD_CSS, /\.card\[hidden\]\{display:none\}/);
 });

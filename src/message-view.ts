@@ -9,14 +9,22 @@ export const MESSAGE_FILTER_CLIENT_SCRIPT = `"use strict";
   var cards = Array.from(document.querySelectorAll("[data-message-filters]"));
   if (!buttons.length || !cards.length) return;
   function apply() {
-    var selected = buttons.filter(function (button) {
-      return button.getAttribute("aria-pressed") === "true";
-    }).map(function (button) { return button.getAttribute("data-message-filter"); });
+    var selected = { account: [], child: [] };
+    buttons.forEach(function (button) {
+      if (button.getAttribute("aria-pressed") !== "true") return;
+      var kind = button.getAttribute("data-message-filter-kind");
+      if (kind === "account" || kind === "child") {
+        selected[kind].push(button.getAttribute("data-message-filter"));
+      }
+    });
     cards.forEach(function (card) {
       var values = JSON.parse(card.getAttribute("data-message-filters") || "[]");
-      card.hidden = selected.length > 0 && !selected.some(function (value) {
-        return values.indexOf(value) !== -1;
-      });
+      var matches = function (kind) {
+        return selected[kind].length === 0 || selected[kind].some(function (value) {
+          return values.indexOf(value) !== -1;
+        });
+      };
+      card.hidden = !matches("account") || !matches("child");
     });
   }
   buttons.forEach(function (button) {
@@ -50,7 +58,7 @@ export function renderMessageFilters(messages: GroupedMessage[]): string {
   const children = [...new Set(messages.flatMap((message) => message.children))]
     .sort((left, right) => left.localeCompare(right, "fi"));
   const group = (label: string, kind: "account" | "child", values: string[]) => values.length
-    ? `<div class="message-filter-group"><span class="message-filter-label">${label}</span>${values.map((value) => `<button class="message-filter" type="button" data-message-filter="${escapeHtml(filterToken(kind, value))}" aria-pressed="false">${escapeHtml(value)}</button>`).join("")}</div>`
+    ? `<div class="message-filter-group"><span class="message-filter-label">${label}</span>${values.map((value) => `<button class="message-filter" type="button" data-message-filter-kind="${kind}" data-message-filter="${escapeHtml(filterToken(kind, value))}" aria-pressed="false">${escapeHtml(value)}</button>`).join("")}</div>`
     : "";
   return `<section class="message-filters" aria-label="Suodata viestejä">${group("Wilma-tilit", "account", accounts)}${group("Lapset", "child", children)}</section>`;
 }
