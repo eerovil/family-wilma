@@ -93,3 +93,18 @@ test("repeated messages for only one child remain separate", () => {
   assert.equal(grouped.length, 2);
   assert.deepEqual(grouped.map((entry) => entry.children), [["Einari"], ["Einari"]]);
 });
+
+test("identical notices merge across children but stay separate from inbox messages", () => {
+  const notice = message({ sourceType: "notice" });
+  const grouped = groupMessages([
+    notice,
+    message({ sourceType: "notice", studentNumber: "202", child: "Valtteri", messageId: 19 }),
+    message({ messageId: 20 }),
+  ]);
+
+  assert.equal(grouped.length, 2);
+  const noticeGroup = grouped.find((entry) => entry.sourceType === "notice");
+  assert.deepEqual(noticeGroup?.children, ["Einari", "Valtteri"]);
+  assert.deepEqual(noticeGroup?.members.map((member) => member.sourceType), ["notice", "notice"]);
+  assert.match(noticeGroup?.groupId ?? "", /^[a-f0-9]{64}$/);
+});

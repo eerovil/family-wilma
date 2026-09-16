@@ -27,6 +27,16 @@ test("message cards are collapsed by default and wrap unbroken content", () => {
   assert.doesNotMatch(html, /checkbox|Valitse analysoitavaksi/);
 });
 
+test("notice cards are labeled in the shared message timeline", () => {
+  const html = renderMessageCard({
+    message: groupMessages([{ ...message, sourceType: "notice" }])[0]!,
+    analysis: null,
+    pending: false,
+  });
+
+  assert.match(html, /<span class="pill">Tiedote<\/span>/);
+});
+
 test("merged message cards show every affected child once", () => {
   const grouped = groupMessages([
       message,

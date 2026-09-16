@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Anthropic from "@anthropic-ai/sdk";
-import { MessageAnalyzer } from "./analysis.js";
+import { analysisIdentity, MessageAnalyzer } from "./analysis.js";
 import { AnalysisStore } from "./store.js";
 
 test("message analysis requests and consumes schema-constrained JSON", async () => {
@@ -57,4 +57,22 @@ test("message analysis requests and consumes schema-constrained JSON", async () 
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+test("notice and inbox message ids use separate analysis identities", () => {
+  const message = {
+    accountId: "school",
+    studentNumber: "101",
+    child: "Child",
+    messageId: 7,
+    subject: "Same subject",
+    sender: "Teacher",
+    sentAt: new Date("2026-09-15T08:00:00Z"),
+    content: "Same content",
+  };
+
+  assert.notDeepEqual(
+    analysisIdentity(message),
+    analysisIdentity({ ...message, sourceType: "notice" }),
+  );
 });

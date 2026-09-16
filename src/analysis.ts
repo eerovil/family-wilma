@@ -44,6 +44,7 @@ export const ANALYSIS_INSTRUCTIONS = [
 ];
 
 export interface AnalyzableMessage {
+  sourceType?: "message" | "notice";
   accountId: string;
   studentNumber: string;
   child: string;
@@ -99,7 +100,7 @@ export function analysisIdentity(message: AnalyzableMessage) {
     };
   }
   return {
-    accountId: message.accountId,
+    accountId: message.sourceType === "notice" ? `${message.accountId}:notice` : message.accountId,
     studentNumber: message.studentNumber,
     messageId: message.messageId,
     content: [message.subject, message.sender, message.sentAt.toISOString(), message.content].join("\n\n"),

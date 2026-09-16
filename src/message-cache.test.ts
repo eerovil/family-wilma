@@ -34,3 +34,18 @@ test("message cache survives restart, revives dates, and is isolated by househol
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("message cache preserves notice source type", () => {
+  const dir = mkdtempSync(join(tmpdir(), "family-wilma-notice-cache-"));
+  try {
+    const cache = new MessageCacheStore(dir, "household-a");
+    cache.put(
+      { messages: [{ ...message("Notice"), sourceType: "notice" }], structuredCalendarItems: [] },
+      "2026-09-15T12:00:00.000Z",
+    );
+
+    assert.equal(cache.get()?.messages[0]?.sourceType, "notice");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

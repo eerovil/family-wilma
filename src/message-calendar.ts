@@ -27,7 +27,7 @@ export function messageCalendarProjection(analyzed: AnalyzedMessage[]): MessageC
       date: item.date,
       time: item.time,
       endDate: item.endDate,
-      description: item.description ?? `Wilma-viesti: ${message.subject}`,
+      description: item.description ?? `${message.sourceType === "notice" ? "Wilma-tiedote" : "Wilma-viesti"}: ${message.subject}`,
       supersededSourceIds: messageSupersededPrefixes.map((prefix) => `${prefix}${index}`),
     }));
   });

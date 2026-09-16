@@ -90,6 +90,7 @@ function isStoredMessage(value: unknown): value is StoredMessage {
   if (!value || typeof value !== "object") return false;
   const message = value as Record<string, unknown>;
   return ["accountId", "studentNumber", "child", "subject", "sender", "content"].every((key) => typeof message[key] === "string")
+    && (message.sourceType === undefined || message.sourceType === "message" || message.sourceType === "notice")
     && typeof message.messageId === "number"
     && Number.isInteger(message.messageId)
     && typeof message.sentAt === "string"

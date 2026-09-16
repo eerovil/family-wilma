@@ -9,6 +9,7 @@ export class MfaCodeRequiredError extends Error {
 }
 
 export interface FetchedMessage {
+  sourceType?: "message" | "notice";
   accountId: string;
   studentNumber: string;
   child: string;
@@ -133,6 +134,29 @@ export class WilmaService {
             sender: detail.senderName?.trim() || "Wilma",
             sentAt: detail.sentAt,
             content: detail.content?.trim() || "",
+          });
+        }
+        const listedNotices = await client.news?.list?.() ?? [];
+        const selectedNotices = options.sentAfter
+          ? listedNotices.filter((notice) => notice.published && notice.published.getTime() >= options.sentAfter!.getTime())
+          : listedNotices;
+        for (const summary of selectedNotices) {
+          const detail = await client.news.get(summary.wilmaId);
+          const published = detail.published ?? summary.published;
+          if (!published) continue;
+          const resources = (detail.resources ?? []).map((resource) => `${resource.label}: ${resource.url}`);
+          messages.push({
+            sourceType: "notice",
+            accountId: account.id,
+            studentNumber: profile.studentNumber,
+            child: profile.child,
+            messageId: detail.wilmaId,
+            subject: detail.title?.trim() || summary.title?.trim() || "(ei otsikkoa)",
+            sender: detail.author?.trim() || summary.author?.trim() || "Wilma-tiedote",
+            sentAt: published,
+            content: [detail.subtitle?.trim(), detail.content?.trim(), ...resources]
+              .filter((value): value is string => Boolean(value))
+              .join("\n\n"),
           });
         }
         const exams = await client.exams.list();

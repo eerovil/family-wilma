@@ -198,6 +198,69 @@ test("recent fetch skips old message details before they are downloaded", async 
   }
 });
 
+test("recent fetch includes notices and skips old notice details", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  const detailIds: number[] = [];
+
+  WilmaClient.listStudents = async () => [
+    { studentNumber: "101", name: "First Child", href: "/profiles/101" },
+  ];
+  WilmaClient.login = async () => ({
+    messages: { list: async () => [] },
+    news: {
+      list: async () => [
+        { wilmaId: 11, title: "Recent notice", published: new Date("2026-09-14T08:00:00Z") },
+        { wilmaId: 12, title: "Old notice", published: new Date("2026-07-01T08:00:00Z") },
+      ],
+      get: async (wilmaId: number) => {
+        detailIds.push(wilmaId);
+        return {
+          wilmaId,
+          title: "Recent notice",
+          subtitle: "Important",
+          author: "Office",
+          published: new Date("2026-09-14T08:00:00Z"),
+          content: "Notice body",
+          resources: [{ label: "Attachment", url: "https://example.test/attachment" }],
+        };
+      },
+    },
+    exams: { list: async () => [] },
+  }) as unknown as WilmaClient;
+
+  const config = {
+    wilmaAccounts: [{
+      id: "konservatorio",
+      baseUrl: "https://conservatory.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [],
+    }],
+  } as unknown as AppConfig;
+
+  try {
+    const bundle = await new WilmaService(config).fetchAll({
+      sentAfter: new Date("2026-08-16T00:00:00Z"),
+    });
+    assert.deepEqual(detailIds, [11]);
+    assert.deepEqual(bundle.messages, [{
+      sourceType: "notice",
+      accountId: "konservatorio",
+      studentNumber: "101",
+      child: "First Child",
+      messageId: 11,
+      subject: "Recent notice",
+      sender: "Office",
+      sentAt: new Date("2026-09-14T08:00:00Z"),
+      content: "Important\n\nNotice body\n\nAttachment: https://example.test/attachment",
+    }]);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
+
 test("lesson sync reads each week for six months and groups valid lessons by displayed child", async () => {
   const originalListStudents = WilmaClient.listStudents;
   const originalLogin = WilmaClient.login;

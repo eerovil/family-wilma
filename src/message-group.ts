@@ -9,6 +9,7 @@ const HELSINKI_DATE = new Intl.DateTimeFormat("en-CA", {
 });
 
 export interface MessageMember {
+  sourceType?: "message" | "notice";
   accountId: string;
   studentNumber: string;
   messageId: number;
@@ -31,7 +32,7 @@ function helsinkiDate(date: Date): string {
 }
 
 function duplicateKey(message: FetchedMessage): string {
-  return [helsinkiDate(message.sentAt), message.sender, message.subject, message.content].join("\0");
+  return [message.sourceType ?? "message", helsinkiDate(message.sentAt), message.sender, message.subject, message.content].join("\0");
 }
 
 function canonicalOrder(left: FetchedMessage, right: FetchedMessage): number {
@@ -41,7 +42,8 @@ function canonicalOrder(left: FetchedMessage, right: FetchedMessage): number {
 }
 
 export function messageSourcePrefix(message: MessageMember): string {
-  return `wilma-message:${message.accountId}:${message.studentNumber}:${message.messageId}:`;
+  const source = message.sourceType === "notice" ? "wilma-notice" : "wilma-message";
+  return `${source}:${message.accountId}:${message.studentNumber}:${message.messageId}:`;
 }
 
 export function groupMessages(messages: FetchedMessage[]): GroupedMessage[] {
@@ -76,7 +78,13 @@ function groupedMessage(key: string, orderedMembers: FetchedMessage[], children:
     ...canonical,
     child: children.join(" & "),
     children,
-    members: orderedMembers.map(({ accountId, studentNumber, messageId, child }) => ({ accountId, studentNumber, messageId, child })),
+    members: orderedMembers.map(({ sourceType, accountId, studentNumber, messageId, child }) => ({
+      ...(sourceType ? { sourceType } : {}),
+      accountId,
+      studentNumber,
+      messageId,
+      child,
+    })),
     groupId,
     displaySentAt: newest,
     analysisAliases: stableIdentity ? orderedMembers : [],

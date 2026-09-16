@@ -66,3 +66,25 @@ test("calendar source identity survives one child's copy leaving the visible win
 
   assert.equal(together.items[0]?.sourceId, later.items[0]?.sourceId);
 });
+
+test("notice analysis uses notice-specific calendar source identities", () => {
+  const notice: FetchedMessage = {
+    sourceType: "notice",
+    accountId: "konservatorio",
+    studentNumber: "101",
+    child: "Einari",
+    messageId: 7,
+    subject: "Concert",
+    sender: "Office",
+    sentAt: new Date("2026-09-15T06:00:00Z"),
+    content: "Concert on Friday.",
+  };
+  const projection = messageCalendarProjection([{
+    message: groupMessages([notice])[0]!,
+    calendarItems: [{ title: "Concert", date: "2026-09-18", time: null, endDate: null, description: null }],
+    hasOtherContent: false,
+  }]);
+
+  assert.equal(projection.items[0]?.description, "Wilma-tiedote: Concert");
+  assert.deepEqual(projection.supersededSourcePrefixes, ["wilma-notice:konservatorio:101:7:"]);
+});
