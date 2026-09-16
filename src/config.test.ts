@@ -18,6 +18,12 @@ test("Wilma accounts do not require manual profile mappings", () => {
         baseUrl: "https://school.inschool.fi",
         username: "guardian",
         password: "secret",
+      }, {
+        id: "conservatory",
+        baseUrl: "https://conservatory.inschool.fi",
+        username: "guardian",
+        password: "secret",
+        includeLessons: false,
       }]),
     });
 
@@ -26,6 +32,8 @@ test("Wilma accounts do not require manual profile mappings", () => {
     assert.equal(config.pedanetHomeworkUrl, null);
     assert.equal(config.pedanetHomeworkModuleId, null);
     assert.deepEqual(config.wilmaAccounts[0]?.profiles, []);
+    assert.equal(config.wilmaAccounts[0]?.includeLessons, true);
+    assert.equal(config.wilmaAccounts[1]?.includeLessons, false);
     assert.deepEqual(config.googleAllowedLoginEmails, ["owner@example.com"]);
   } finally {
     process.env = previous;

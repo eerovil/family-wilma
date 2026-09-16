@@ -99,6 +99,15 @@ export class WilmaService {
   }
 
   async fetchAll(options: { sentAfter?: Date; includeLessons?: boolean } = {}): Promise<WilmaBundle> {
+    try {
+      return await this.fetchAllOnce(options);
+    } catch (error) {
+      if (!(error instanceof MfaCodeRequiredError)) this.clearCompletedFetchState();
+      throw error;
+    }
+  }
+
+  private async fetchAllOnce(options: { sentAfter?: Date; includeLessons?: boolean }): Promise<WilmaBundle> {
     const messages: FetchedMessage[] = [];
     const structuredCalendarItems: SourceCalendarItem[] = [];
     const lessonItemsByChild = new Map<string, Map<string, SourceCalendarItem>>();
@@ -139,7 +148,7 @@ export class WilmaService {
               .join("\n") || null,
           });
         }
-        if (lessonWindow) {
+        if (lessonWindow && account.includeLessons !== false) {
           const childLessons = lessonItemsByChild.get(profile.child) ?? new Map<string, SourceCalendarItem>();
           lessonItemsByChild.set(profile.child, childLessons);
           if (!lessonReconcileByChild.has(profile.child)) lessonReconcileByChild.set(profile.child, true);

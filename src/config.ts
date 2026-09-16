@@ -9,6 +9,7 @@ export interface WilmaAccountConfig {
   username: string;
   password: string;
   profiles: ProfileMapping[];
+  includeLessons?: boolean;
 }
 
 export interface AppConfig {
@@ -51,6 +52,10 @@ function parseAccounts(): WilmaAccountConfig[] {
     }
     if (ids.has(id)) throw new Error(`Duplicate Wilma account id: ${id}`);
     ids.add(id);
+    const includeLessons = object.includeLessons ?? true;
+    if (typeof includeLessons !== "boolean") {
+      throw new Error(`Wilma account ${id} includeLessons must be a boolean`);
+    }
     const rawProfiles = object.profiles ?? [];
     if (!Array.isArray(rawProfiles)) throw new Error(`Wilma account ${id} profiles must be an array`);
     const profiles = rawProfiles.map((profile, profileIndex) => {
@@ -65,7 +70,7 @@ function parseAccounts(): WilmaAccountConfig[] {
       }
       return { studentNumber, child };
     });
-    return { id, baseUrl, username, password, profiles };
+    return { id, baseUrl, username, password, profiles, includeLessons };
   });
 }
 

@@ -278,3 +278,123 @@ test("lesson sync reads each week for six months and groups valid lessons by dis
     WilmaClient.login = originalLogin;
   }
 });
+
+test("lesson sync skips accounts without timetable support but keeps their messages and exams", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  const scheduleAccounts: string[] = [];
+
+  WilmaClient.listStudents = async (profile) => [{
+    studentNumber: profile.baseUrl.includes("conservatory") ? "202" : "101",
+    name: profile.baseUrl.includes("conservatory") ? "Music Child" : "School Child",
+    href: "/profiles/child",
+  }];
+  WilmaClient.login = async (profile) => {
+    const account = profile.baseUrl.includes("conservatory") ? "conservatory" : "school";
+    return {
+      messages: {
+        list: async () => [{ wilmaId: account === "school" ? 1 : 2, subject: "Message" }],
+        get: async (wilmaId: number) => ({
+          wilmaId,
+          subject: "Message",
+          senderName: "Teacher",
+          sentAt: new Date("2026-09-15T08:00:00Z"),
+          content: account,
+        }),
+      },
+      exams: {
+        list: async () => [{
+          wilmaId: account === "school" ? 11 : 22,
+          subject: account,
+          dateString: "2026-09-20",
+        }],
+      },
+      schedule: {
+        list: async () => {
+          scheduleAccounts.push(account);
+          if (account === "conservatory") throw new Error("Wilma HTTP 403 at schedule");
+          return [];
+        },
+      },
+    } as unknown as WilmaClient;
+  };
+
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [],
+      includeLessons: true,
+    }, {
+      id: "conservatory",
+      baseUrl: "https://conservatory.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [],
+      includeLessons: false,
+    }],
+  } as unknown as AppConfig;
+
+  try {
+    const bundle = await new WilmaService(config, () => new Date("2026-09-15T05:00:00Z"))
+      .fetchAll({ includeLessons: true });
+    assert.deepEqual(new Set(bundle.messages.map((message) => message.accountId)), new Set(["school", "conservatory"]));
+    assert.deepEqual(new Set(bundle.structuredCalendarItems.map((item) => item.title)), new Set([
+      "School Child: school",
+      "Music Child: conservatory",
+    ]));
+    assert.ok(scheduleAccounts.length > 0);
+    assert.deepEqual(new Set(scheduleAccounts), new Set(["school"]));
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
+
+test("a non-MFA fetch failure clears cached Wilma clients before retry", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  let discoveryCalls = 0;
+  let loginCalls = 0;
+
+  WilmaClient.listStudents = async () => {
+    discoveryCalls += 1;
+    return [{ studentNumber: "101", name: "Child", href: "/profiles/101" }];
+  };
+  WilmaClient.login = async () => {
+    loginCalls += 1;
+    const attempt = loginCalls;
+    return {
+      messages: { list: async () => [] },
+      exams: { list: async () => [] },
+      schedule: {
+        list: async () => attempt === 1
+          ? Promise.reject(new Error("Wilma HTTP 403 at schedule"))
+          : [],
+      },
+    } as unknown as WilmaClient;
+  };
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [],
+      includeLessons: true,
+    }],
+  } as unknown as AppConfig;
+  const service = new WilmaService(config, () => new Date("2026-09-15T05:00:00Z"));
+
+  try {
+    await assert.rejects(service.fetchAll({ includeLessons: true }), /403/);
+    await service.fetchAll();
+    assert.equal(discoveryCalls, 2);
+    assert.equal(loginCalls, 2);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
