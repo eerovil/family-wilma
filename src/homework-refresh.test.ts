@@ -25,6 +25,7 @@ function cache(dir: string): HomeworkCacheStore {
   return new HomeworkCacheStore(dir, {
     wilma: homeworkCacheIdentity(["household"]),
     pedanet: homeworkCacheIdentity(["page"]),
+    exams: homeworkCacheIdentity(["exams"]),
   });
 }
 

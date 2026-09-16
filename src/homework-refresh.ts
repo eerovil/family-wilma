@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { cacheIsFresh } from "./cache-freshness.js";
 import type { HomeworkCacheStore } from "./homework-cache.js";
 import type { PedanetHomework } from "./pedanet-homework.js";
-import type { FetchedHomework } from "./wilma.js";
+import type { FetchedExam, FetchedHomework } from "./wilma.js";
 
 export interface HomeworkRefreshSnapshot {
   state: "idle" | "running" | "mfa" | "success" | "error";
   runId: string | null;
   homework: FetchedHomework[];
+  exams: FetchedExam[];
   wilmaUpdatedAt: string | null;
   wilmaError: boolean;
   pedanet: PedanetHomework[];
@@ -20,6 +21,7 @@ interface HomeworkRefreshDependencies {
   cache: HomeworkCacheStore;
   waitForWilmaTurn?: () => Promise<void>;
   fetchWilma(): Promise<FetchedHomework[]>;
+  fetchExams?: () => Promise<FetchedExam[]>;
   fetchPedanet?: () => Promise<PedanetHomework[]>;
   mfaAccountId?(error: unknown): string | null;
   reportError?(error: unknown, source: "wilma" | "pedanet"): void;
@@ -37,6 +39,7 @@ export class HomeworkRefreshJob {
       state: "idle",
       runId: null,
       homework: wilma?.value ?? [],
+      exams: dependencies.cache.getExams()?.value ?? [],
       wilmaUpdatedAt: wilma?.updatedAt ?? null,
       wilmaError: false,
       pedanet: pedanet?.value ?? [],
@@ -75,7 +78,12 @@ export class HomeworkRefreshJob {
   }
 
   snapshot(): HomeworkRefreshSnapshot {
-    return { ...this.status, homework: [...this.status.homework], pedanet: [...this.status.pedanet] };
+    return {
+      ...this.status,
+      homework: [...this.status.homework],
+      exams: [...this.status.exams],
+      pedanet: [...this.status.pedanet],
+    };
   }
 
   async wait(): Promise<void> {
@@ -103,9 +111,11 @@ export class HomeworkRefreshJob {
     try {
       await this.dependencies.waitForWilmaTurn?.();
       const homework = await this.dependencies.fetchWilma();
+      const exams = this.dependencies.fetchExams ? await this.dependencies.fetchExams() : this.status.exams;
       const updatedAt = this.updatedAt();
       this.dependencies.cache.putWilma(homework, updatedAt);
-      this.status = { ...this.status, homework, wilmaUpdatedAt: updatedAt };
+      if (this.dependencies.fetchExams) this.dependencies.cache.putExams(exams, updatedAt);
+      this.status = { ...this.status, homework, exams, wilmaUpdatedAt: updatedAt };
     } catch (error) {
       const mfaAccountId = this.dependencies.mfaAccountId?.(error) ?? null;
       if (mfaAccountId) {

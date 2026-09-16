@@ -29,6 +29,20 @@ export interface FetchedHomework extends HomeworkItem {
   source?: "homework" | "diary";
 }
 
+export interface FetchedExam {
+  sourceId: string;
+  child: string;
+  subject: string;
+  date: string;
+  description: string;
+  teacher: string;
+}
+
+/** The one place the exam source id is built, so the view and sync cannot drift. */
+export function examSourceId(accountId: string, studentNumber: string, examId: number): string {
+  return `wilma-exam:${accountId}:${studentNumber}:${examId}`;
+}
+
 export interface SourceCalendarItem {
   sourceId: string;
   title: string;
@@ -125,6 +139,34 @@ export class WilmaService {
       || left.subject.localeCompare(right.subject, "fi"));
     this.clearCompletedFetchState();
     return homework;
+  }
+
+  /**
+   * Upcoming exams for every child, with the same source ids calendar sync
+   * writes, so the homework page can offer one checkbox per exam.
+   */
+  async fetchExams(): Promise<FetchedExam[]> {
+    const exams: FetchedExam[] = [];
+    for (const account of this.config.wilmaAccounts) {
+      for (const profile of await this.profilesForAccount(account)) {
+        const client = await this.clientForFetch(account, profile);
+        for (const exam of await client.exams.list()) {
+          exams.push({
+            sourceId: examSourceId(account.id, profile.studentNumber, exam.wilmaId),
+            child: profile.child,
+            subject: exam.subject,
+            date: exam.dateString,
+            description: [exam.description, exam.notes].map((value) => value?.trim()).filter(Boolean).join(" · "),
+            teacher: exam.teacher?.trim() ?? "",
+          });
+        }
+      }
+    }
+    exams.sort((left, right) => left.date.localeCompare(right.date)
+      || left.child.localeCompare(right.child, "fi")
+      || left.subject.localeCompare(right.subject, "fi"));
+    this.clearCompletedFetchState();
+    return exams;
   }
 
   /**
@@ -227,7 +269,7 @@ export class WilmaService {
         const exams = await client.exams.list();
         for (const exam of exams) {
           structuredCalendarItems.push({
-            sourceId: `wilma-exam:${account.id}:${profile.studentNumber}:${exam.wilmaId}`,
+            sourceId: examSourceId(account.id, profile.studentNumber, exam.wilmaId),
             title: `${profile.child}: ${exam.subject}`,
             date: exam.dateString,
             time: null,

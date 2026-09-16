@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HOMEWORK_VIEW_CSS, renderHomeworkContent } from "./homework-view.js";
+import { HOMEWORK_VIEW_CSS, renderExamSection, renderHomeworkContent } from "./homework-view.js";
 import type { FetchedHomework } from "./wilma.js";
 
 function homework(overrides: Partial<FetchedHomework>): FetchedHomework {
@@ -100,4 +100,25 @@ test("Peda.net error does not hide Wilma homework", () => {
   assert.match(html, /Peda\.net-kotitehtäviä ei voitu ladata/);
   assert.match(html, /Still visible/);
   assert.match(html, /https:\/\/example\.test\/homework/);
+});
+
+test("each exam is a checkbox that is checked unless the source was dropped", () => {
+  const html = renderExamSection({
+    exams: [
+      { sourceId: "wilma-exam:school:101:7", child: "Valtteri", subject: "Matematiikka", date: "2026-09-20", description: "s. 4-61", teacher: "RSH" },
+      { sourceId: "wilma-exam:school:101:8", child: "Einari", subject: "Ympäristöoppi", date: "2026-09-21", description: "", teacher: "" },
+    ],
+    droppedSourceIds: new Set(["wilma-exam:school:101:8"]),
+  });
+
+  assert.match(html, /Kokeet/);
+  assert.match(html, /value="wilma-exam:school:101:7"[\s\S]{0,400}?checked/);
+  assert.ok(!/value="wilma-exam:school:101:8"[\s\S]{0,200}?checked/.test(html));
+  assert.match(html, /20\.9\.2026 · Valtteri · Matematiikka — s\. 4-61/);
+  assert.match(html, /action="\/calendar\/drop"/);
+  assert.match(html, /name="returnTo" value="\/homework"/);
+});
+
+test("no exams means no Kokeet section at all", () => {
+  assert.equal(renderExamSection({ exams: [], droppedSourceIds: new Set() }), "");
 });

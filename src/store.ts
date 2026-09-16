@@ -85,6 +85,10 @@ export class AnalysisStore {
         FOREIGN KEY (batch_id) REFERENCES analysis_batches(batch_id)
       );
       CREATE INDEX IF NOT EXISTS analysis_batch_items_cache_key ON analysis_batch_items(cache_key);
+      CREATE TABLE IF NOT EXISTS dropped_calendar_sources (
+        source_id TEXT PRIMARY KEY,
+        dropped_at TEXT NOT NULL
+      );
     `);
     const batchColumns = this.db.prepare("PRAGMA table_info(analysis_batches)").all() as unknown as Array<{ name: string }>;
     if (!batchColumns.some((column) => column.name === "provider_batch_id")) {
@@ -92,6 +96,28 @@ export class AnalysisStore {
       this.db.exec("UPDATE analysis_batches SET provider_batch_id = batch_id");
     }
     this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS analysis_batches_provider_id ON analysis_batches(provider_batch_id)");
+  }
+
+  /**
+   * Calendar sources the household has unchecked. Sync skips them and deletes
+   * the managed event they already created, so a wrong AI guess or an exam that
+   * does not belong in the calendar can be taken out and put back by hand.
+   */
+  droppedCalendarSources(): string[] {
+    return (this.db.prepare("SELECT source_id FROM dropped_calendar_sources").all() as unknown as Array<{ source_id: string }>)
+      .map((row) => row.source_id);
+  }
+
+  setCalendarSourceDropped(sourceId: string, dropped: boolean, now = new Date()): void {
+    if (!sourceId.trim()) throw new Error("Calendar source id cannot be empty");
+    if (dropped) {
+      this.db.prepare(`
+        INSERT INTO dropped_calendar_sources (source_id, dropped_at) VALUES (?, ?)
+        ON CONFLICT(source_id) DO NOTHING
+      `).run(sourceId, now.toISOString());
+    } else {
+      this.db.prepare("DELETE FROM dropped_calendar_sources WHERE source_id = ?").run(sourceId);
+    }
   }
 
   key(identity: AnalysisIdentity): { key: string; contentHash: string } {

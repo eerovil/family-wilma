@@ -74,3 +74,22 @@ test("analysis batches persist pending identities and import results idempotentl
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("dropped calendar sources are remembered and can be checked back", () => {
+  const dir = mkdtempSync(join(tmpdir(), "family-wilma-drop-"));
+  try {
+    const store = new AnalysisStore(dir);
+    assert.deepEqual(store.droppedCalendarSources(), []);
+    store.setCalendarSourceDropped("wilma-exam:school:101:7", true);
+    store.setCalendarSourceDropped("wilma-exam:school:101:7", true);
+    assert.deepEqual(store.droppedCalendarSources(), ["wilma-exam:school:101:7"]);
+
+    // The same store reopened keeps the drop, and unchecking removes it.
+    assert.deepEqual(new AnalysisStore(dir).droppedCalendarSources(), ["wilma-exam:school:101:7"]);
+    store.setCalendarSourceDropped("wilma-exam:school:101:7", false);
+    assert.deepEqual(store.droppedCalendarSources(), []);
+    assert.throws(() => store.setCalendarSourceDropped("  ", true), /cannot be empty/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

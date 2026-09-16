@@ -17,6 +17,8 @@ const MAX_RATE_LIMIT_RETRIES = 5;
 export interface CalendarSyncPlan {
   sharedItems: SourceCalendarItem[];
   sharedSupersededSourcePrefixes?: string[];
+  /** Source ids the household unchecked: never written, and deleted if already there. */
+  droppedSourceIds?: string[];
   lessonCalendars: LessonCalendar[];
   lessonWindow: LessonWindow;
 }
@@ -120,12 +122,14 @@ export class GoogleCalendarService {
     );
     this.saveCalendarMap(mapping);
     const totals = { created: 0, updated: 0, unchanged: 0, deleted: 0 };
+    const dropped = new Set(plan.droppedSourceIds ?? []);
     addCounts(totals, await this.syncCalendar(
       calendar,
       ids.shared,
-      plan.sharedItems,
+      plan.sharedItems.filter((item) => !dropped.has(item.sourceId)),
       undefined,
       plan.sharedSupersededSourcePrefixes,
+      dropped,
     ));
     for (const lessonCalendar of plan.lessonCalendars) {
       addCounts(totals, await this.syncCalendar(
@@ -264,6 +268,7 @@ export class GoogleCalendarService {
     items: SourceCalendarItem[],
     reconcileWindow?: LessonWindow,
     cleanupSourcePrefixes: string[] = [],
+    droppedSourceIds: ReadonlySet<string> = new Set(),
   ): Promise<{ created: number; updated: number; unchanged: number; deleted: number }> {
     const existing = await this.managedEvents(calendar, calendarId, reconcileWindow);
     const bySource = new Map(existing.map((event) => [event.extendedProperties?.private?.familyWilmaSourceId, event]));
@@ -291,10 +296,19 @@ export class GoogleCalendarService {
       }
     });
     const deletedIds = new Set<string>();
+    if (droppedSourceIds.size) {
+      await forEachConcurrent(existing, 1, async (event) => {
+        const sourceId = event.extendedProperties?.private?.familyWilmaSourceId;
+        if (!event.id || migratedIds.has(event.id) || !sourceId || !droppedSourceIds.has(sourceId)) return;
+        await this.writeRequest(() => calendar.events.delete({ calendarId, eventId: event.id! }));
+        deletedIds.add(event.id);
+        counts.deleted += 1;
+      });
+    }
     if (supersededSourcePrefixes.size) {
       await forEachConcurrent(existing, 1, async (event) => {
         const sourceId = event.extendedProperties?.private?.familyWilmaSourceId;
-        if (!event.id || migratedIds.has(event.id) || !sourceId || desiredSources.has(sourceId)
+        if (!event.id || migratedIds.has(event.id) || deletedIds.has(event.id) || !sourceId || desiredSources.has(sourceId)
             || ![...supersededSourcePrefixes].some((prefix) => sourceId.startsWith(prefix))) return;
         await this.writeRequest(() => calendar.events.delete({ calendarId, eventId: event.id! }));
         deletedIds.add(event.id);

@@ -677,3 +677,78 @@ test("disallowed Google sign-in cannot overwrite Calendar credentials", async ()
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("sync skips dropped sources and deletes the event they already created", async () => {
+  const { calendar, dataDir } = service();
+  const insertedEvents: Array<{ calendarId: string; summary: string }> = [];
+  const deletedEvents: Array<{ calendarId: string; eventId: string }> = [];
+  let calendarSequence = 0;
+  const fakeApi = {
+    calendars: {
+      get: async () => ({ data: {} }),
+      insert: async ({ requestBody }: { requestBody: { summary: string } }) => {
+        calendarSequence += 1;
+        return { data: { id: `calendar-${calendarSequence}` } };
+      },
+    },
+    events: {
+      list: async () => ({
+        data: {
+          items: [{
+            id: "dropped-event",
+            summary: "Child: Exam",
+            start: { date: "2026-09-20" },
+            end: { date: "2026-09-21" },
+            extendedProperties: { private: {
+              familyWilmaManagedBy: "family-wilma-v1",
+              familyWilmaSourceId: "wilma-exam:school:101:7",
+            } },
+          }],
+        },
+      }),
+      insert: async ({ calendarId, requestBody }: { calendarId: string; requestBody: { summary: string } }) => {
+        insertedEvents.push({ calendarId, summary: requestBody.summary });
+      },
+      update: async () => { throw new Error("unexpected update"); },
+      delete: async ({ calendarId, eventId }: { calendarId: string; eventId: string }) => {
+        deletedEvents.push({ calendarId, eventId });
+      },
+    },
+  };
+
+  try {
+    writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
+      access_token: "test",
+      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+      family_wilma_calendar_owner: "eero@example.com",
+    }));
+    (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
+      setCredentials() {},
+      on() {},
+    });
+    (calendar as unknown as { api: () => unknown }).api = () => fakeApi;
+
+    const result = await calendar.sync({
+      sharedItems: [
+        {
+          sourceId: "wilma-exam:school:101:7", title: "Child: Exam", date: "2026-09-20",
+          time: null, endDate: null, description: null,
+        },
+        {
+          sourceId: "wilma-exam:school:101:8", title: "Child: Kept exam", date: "2026-09-21",
+          time: null, endDate: null, description: null,
+        },
+      ],
+      droppedSourceIds: ["wilma-exam:school:101:7"],
+      lessonCalendars: [],
+      lessonWindow: { start: "2026-09-14", end: "2027-03-16", deleteFrom: "2026-09-16" },
+    });
+
+    assert.deepEqual(insertedEvents.map((event) => event.summary), ["Child: Kept exam"]);
+    assert.deepEqual(deletedEvents.map((event) => event.eventId), ["dropped-event"]);
+    assert.equal(result.deleted, 1);
+    assert.equal(result.created, 1);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});

@@ -1,7 +1,24 @@
 import type { PedanetHomework } from "./pedanet-homework.js";
-import type { FetchedHomework } from "./wilma.js";
+import { renderCalendarChoice } from "./message-view.js";
+import type { FetchedExam, FetchedHomework } from "./wilma.js";
 
-export const HOMEWORK_VIEW_CSS = ".homework-card{overflow-wrap:anywhere}.homework-card h3{margin:.45rem 0;font-size:1.15rem}.homework-body{white-space:pre-wrap;line-height:1.45}.source-card{border-left:6px solid #2563eb}.homework-meta{margin:.35rem 0 0}.diary-pill{margin-left:.35rem;background:#e5e7eb;color:#374151}.homework-day{margin:1.8rem 0 .2rem;font-size:1rem;color:#475569;text-transform:lowercase}";
+export const HOMEWORK_VIEW_CSS = ".homework-card{overflow-wrap:anywhere}.homework-card h3{margin:.45rem 0;font-size:1.15rem}.homework-body{white-space:pre-wrap;line-height:1.45}.source-card{border-left:6px solid #2563eb}.homework-meta{margin:.35rem 0 0}.diary-pill{margin-left:.35rem;background:#e5e7eb;color:#374151}.homework-day{margin:1.8rem 0 .2rem;font-size:1rem;color:#475569;text-transform:lowercase}.exam-heading{margin:.2rem 0;font-size:1.15rem}";
+
+/** Upcoming exams, each a checkbox that decides whether sync writes it. */
+export function renderExamSection(options: {
+  exams: FetchedExam[];
+  droppedSourceIds: ReadonlySet<string>;
+}): string {
+  if (!options.exams.length) return "";
+  const rows = options.exams.map((exam) => renderCalendarChoice({
+    sourceId: exam.sourceId,
+    label: `${formatDate(exam.date)} · ${exam.child} · ${exam.subject}${exam.description ? ` — ${exam.description}` : ""}`,
+    dropped: options.droppedSourceIds.has(exam.sourceId),
+    returnTo: "/homework",
+  })).join("");
+  return `<article class="card homework-card"><h2 class="exam-heading">Kokeet</h2>`
+    + `<p class="muted homework-meta">Rasti ratkaisee, kirjoittaako kalenterisynkkaus kokeen.</p>${rows}</article>`;
+}
 
 export function renderHomeworkContent(options: {
   homework: FetchedHomework[];

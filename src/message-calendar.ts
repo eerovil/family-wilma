@@ -13,12 +13,20 @@ export interface MessageCalendarProjection {
   supersededSourcePrefixes: string[];
 }
 
+/**
+ * The prefix every calendar item of one message shares. The view needs it too,
+ * so a checkbox can name the exact source id sync will write or drop.
+ */
+export function canonicalMessageSourcePrefix(message: GroupedMessage): string {
+  return message.logicalMessageId
+    ? `wilma-message-group:${message.logicalMessageId}:`
+    : messageSourcePrefix(message);
+}
+
 export function messageCalendarProjection(analyzed: AnalyzedMessage[]): MessageCalendarProjection {
   const supersededSourcePrefixes = new Set<string>();
   const items = analyzed.flatMap(({ message, calendarItems }) => {
-    const canonicalPrefix = message.logicalMessageId
-      ? `wilma-message-group:${message.logicalMessageId}:`
-      : messageSourcePrefix(message);
+    const canonicalPrefix = canonicalMessageSourcePrefix(message);
     const messageSupersededPrefixes = message.logicalMessageId ? message.members.map(messageSourcePrefix) : [];
     for (const prefix of messageSupersededPrefixes) supersededSourcePrefixes.add(prefix);
     return calendarItems.map((item, index) => ({

@@ -8,7 +8,7 @@ import { HomeworkCacheStore, homeworkCacheIdentity, wilmaHomeworkCacheIdentity }
 
 test("homework cache survives store recreation and is isolated by configuration identity", () => {
   const dir = mkdtempSync(join(tmpdir(), "family-wilma-homework-cache-"));
-  const identities = { wilma: homeworkCacheIdentity(["household-a"]), pedanet: homeworkCacheIdentity(["page-a"]) };
+  const identities = { wilma: homeworkCacheIdentity(["household-a"]), pedanet: homeworkCacheIdentity(["page-a"]), exams: homeworkCacheIdentity(["exams"]) };
   const updatedAt = "2026-09-15T12:00:00.000Z";
   try {
     const first = new HomeworkCacheStore(dir, identities);
@@ -40,6 +40,7 @@ test("homework cache survives store recreation and is isolated by configuration 
     const changedConfig = new HomeworkCacheStore(dir, {
       wilma: homeworkCacheIdentity(["household-b"]),
       pedanet: homeworkCacheIdentity(["page-b"]),
+      exams: homeworkCacheIdentity(["exams-b"]),
     });
     assert.equal(changedConfig.getWilma(), null);
     assert.equal(changedConfig.getPedanet(), null);

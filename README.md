@@ -240,6 +240,13 @@ explicitly and have reached the local cache. Sync never analyzes missing results
 historical backfill is intentionally outside the v1 application workflow and can be handled
 manually.
 
+Every message-derived item and every exam has a checkbox: under **Kalenteriin:** on the message
+view, and in the **Kokeet** section of **Kotitehtävät**. Unchecking one drops it — the next sync
+neither writes it nor leaves an event it wrote earlier, and re-checking the same box brings it
+back. Dropping is by source id, so it survives re-analysis of the same message and a Wilma
+refetch of the same exam. Lessons have no checkbox: they are reconciled against Wilma on every
+sync, which would overwrite a drop.
+
 Calendar sync runs as an in-process background job. The start request returns immediately, the
 home page refreshes while the job is running, and closing the browser does not cancel it. The
 latest completion counts or a retryable error remain visible on the home page. An application

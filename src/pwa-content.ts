@@ -30,6 +30,16 @@ export const OFFLINE_PAGE = `<!doctype html>
 
 export const PWA_CLIENT_SCRIPT = `"use strict";
 (function () {
+  // A checkbox that posts its own form on change. Without this the page still
+  // works: the form's own submit button is what a no-script browser uses.
+  document.addEventListener("change", function (event) {
+    var target = event.target;
+    if (!target || !target.matches || !target.matches("[data-autosubmit]")) return;
+    var form = target.form;
+    if (form) form.submit();
+  });
+}());
+(function () {
   if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
   var reloading = false;
   var controlled = navigator.serviceWorker.controller !== null;

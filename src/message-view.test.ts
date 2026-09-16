@@ -125,3 +125,36 @@ test("message filters OR within categories, AND between categories, and default 
   assert.equal(conservatoryValtteriCard.hidden, false);
   assert.match(MESSAGE_CARD_CSS, /\.card\[hidden\]\{display:none\}/);
 });
+
+test("every calendar line is a checkbox naming the source id sync writes", () => {
+  const message = {
+    logicalMessageId: "abc",
+    subject: "Retkipäivä",
+    sender: "Opettaja",
+    content: "Retki on tiistaina.",
+    sourceType: "message" as const,
+    children: ["Valtteri"],
+    members: [{ accountId: "school", studentNumber: "101", child: "Valtteri", messageId: 5 }],
+    displaySentAt: new Date("2026-09-15T09:00:00Z"),
+  } as unknown as Parameters<typeof renderMessageCard>[0]["message"];
+
+  const html = renderMessageCard({
+    message,
+    analysis: {
+      calendarItems: [
+        { date: "2026-09-22", time: "09:00", title: "Retki", endDate: null, description: null },
+        { date: "2026-09-23", time: null, title: "Väärä arvaus", endDate: null, description: null },
+      ],
+      hasOtherContent: false,
+    } as unknown as Parameters<typeof renderMessageCard>[0]["analysis"],
+    pending: false,
+    droppedSourceIds: new Set(["wilma-message-group:abc:1"]),
+  });
+
+  assert.match(html, /name="sourceId" value="wilma-message-group:abc:0"/);
+  assert.match(html, /name="sourceId" value="wilma-message-group:abc:1"/);
+  // The kept item is checked; the dropped one is not, and reads as struck through.
+  assert.equal(html.match(/checked/g)?.length, 1);
+  assert.match(html, /class="muted dropped"/);
+  assert.match(html, /name="returnTo" value="\/messages"/);
+});

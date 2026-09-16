@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { PedanetHomework } from "./pedanet-homework.js";
 import type { WilmaAccountConfig } from "./config.js";
-import type { FetchedHomework } from "./wilma.js";
+import type { FetchedExam, FetchedHomework } from "./wilma.js";
 
 export interface CachedValue<T> {
   value: T;
   updatedAt: string;
 }
 
-type HomeworkSource = "wilma" | "pedanet";
+type HomeworkSource = "wilma" | "pedanet" | "exams";
 
 export function homeworkCacheIdentity(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -39,7 +39,7 @@ export class HomeworkCacheStore {
 
   constructor(
     dataDir: string,
-    private readonly identities: { wilma: string; pedanet: string | null },
+    private readonly identities: { wilma: string; pedanet: string | null; exams: string },
   ) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     chmodSync(dataDir, 0o700);
@@ -64,6 +64,14 @@ export class HomeworkCacheStore {
 
   putWilma(value: FetchedHomework[], updatedAt: string): void {
     this.put("wilma", value, updatedAt);
+  }
+
+  getExams(): CachedValue<FetchedExam[]> | null {
+    return this.get("exams", isFetchedExamArray);
+  }
+
+  putExams(value: FetchedExam[], updatedAt: string): void {
+    this.put("exams", value, updatedAt);
   }
 
   getPedanet(): CachedValue<PedanetHomework[]> | null {
@@ -110,6 +118,12 @@ function isFetchedHomeworkArray(value: unknown): value is FetchedHomework[] {
   return Array.isArray(value) && value.every((item) => isRecordWithStrings(item, [
     "accountId", "studentNumber", "child", "date", "subject", "subjectCode",
     "homework", "teacher", "teacherCode",
+  ]));
+}
+
+function isFetchedExamArray(value: unknown): value is FetchedExam[] {
+  return Array.isArray(value) && value.every((item) => isRecordWithStrings(item, [
+    "sourceId", "child", "subject", "date", "description", "teacher",
   ]));
 }
 

@@ -15,7 +15,7 @@ import { MfaCodeRequiredError, WilmaService, type FetchedMessage } from "./wilma
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
 import { configureErrorReportingSecrets, flushErrorReporting, initializeErrorReporting, reportError } from "./telemetry.js";
 import { PedanetHomeworkService } from "./pedanet-homework.js";
-import { HOMEWORK_VIEW_CSS, renderHomeworkContent } from "./homework-view.js";
+import { HOMEWORK_VIEW_CSS, renderExamSection, renderHomeworkContent } from "./homework-view.js";
 import { HomeworkCacheStore, homeworkCacheIdentity, wilmaCacheIdentity } from "./homework-cache.js";
 import { HomeworkRefreshJob, type HomeworkRefreshSnapshot } from "./homework-refresh.js";
 import { MessageCacheStore } from "./message-cache.js";
@@ -65,6 +65,7 @@ const homeworkCache = new HomeworkCacheStore(config.dataDir, {
   pedanet: pedanetHomework
     ? homeworkCacheIdentity([config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId, "recent-seven-days-v1"])
     : null,
+  exams: wilmaCacheIdentity(config.wilmaAccounts),
 });
 const homeworkRefresh = new HomeworkRefreshJob({
   cache: homeworkCache,
@@ -74,6 +75,7 @@ const homeworkRefresh = new HomeworkRefreshJob({
     }
   },
   fetchWilma: () => wilma.fetchHomework(),
+  fetchExams: () => wilma.fetchExams(),
   ...(pedanetHomework ? { fetchPedanet: () => pedanetHomework.recent() } : {}),
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error, source) => reportError(error, { operation: `homework.${source}.fetch` }),
@@ -103,6 +105,7 @@ const analyzeSync = new AnalyzeSyncJob({
     return await calendar.sync({
       sharedItems: [...bundle.structuredCalendarItems, ...messageProjection.items],
       sharedSupersededSourcePrefixes: messageProjection.supersededSourcePrefixes,
+      droppedSourceIds: store.droppedCalendarSources(),
       lessonCalendars: bundle.lessonCalendars,
       lessonWindow: bundle.lessonWindow,
     });
@@ -161,13 +164,16 @@ function homeworkPage(snapshot: HomeworkRefreshSnapshot): string {
       pedanetSourceUrl: config.pedanetHomeworkUrl,
     })
     : "";
+  const exams = hasCache || snapshot.state !== "running"
+    ? renderExamSection({ exams: snapshot.exams, droppedSourceIds: new Set(store.droppedCalendarSources()) })
+    : "";
   const refresh = homeworkRefreshStatus(snapshot);
   const refreshButton = snapshot.state === "running"
     ? '<button type="submit" disabled>Päivitetään…</button>'
     : '<button class="secondary" type="submit">Päivitä nyt</button>';
   return layout(
     "Kotitehtävät",
-    `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1><form method="post" action="/homework/refresh">${refreshButton}</form>${refresh.html}${content}`,
+    `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1><form method="post" action="/homework/refresh">${refreshButton}</form>${refresh.html}${exams}${content}`,
     refresh.pollUrl ? `<meta http-equiv="refresh" content="3;url=${escapeHtml(refresh.pollUrl)}">` : "",
   );
 }
@@ -263,10 +269,12 @@ function busyPage(message: string): string {
 }
 
 function messageCards(messages: GroupedMessage[]): string {
+  const droppedSourceIds = new Set(store.droppedCalendarSources());
   return messages.map((message) => renderMessageCard({
     message,
     analysis: analyzer.cached(message),
     pending: analysisIdentities(message).some((identity) => store.hasPending(identity)),
+    droppedSourceIds,
   })).join("");
 }
 
@@ -424,6 +432,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const runId = homeworkRefresh.start({ force: true });
       return redirect(res, `/homework?run=${encodeURIComponent(runId ?? "pending")}`);
     }
+    if (req.method === "POST" && url.pathname === "/calendar/drop") {
+      const form = await readForm(req);
+      const sourceId = form.get("sourceId")?.trim();
+      if (!sourceId) return send(res, 400, busyPage("Kalenterikohdetta ei tunnistettu."));
+      // An unchecked checkbox is simply absent from the post, which is the drop.
+      store.setCalendarSourceDropped(sourceId, form.get("keep") !== "1");
+      return redirect(res, safeReturnPath(form.get("returnTo")));
+    }
     if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage(email));
     if (req.method === "POST" && url.pathname === "/logout") {
       sessions.destroySession(token);
@@ -543,6 +559,7 @@ function knownRoute(pathname: string): string {
   return new Set([
     "/", "/healthz", "/oauth/google/start", "/oauth/google/calendar/start", "/oauth/google/callback", "/setup",
     "/logout", "/homework", "/homework/refresh", "/messages", "/messages/refresh", "/messages/analyze", "/mfa",
+    "/calendar/drop",
     "/setup/discover",
   ]).has(pathname) ? pathname : "unknown";
 }
