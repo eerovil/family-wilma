@@ -158,3 +158,29 @@ test("every calendar line is a checkbox naming the source id sync writes", () =>
   assert.match(html, /class="muted dropped"/);
   assert.match(html, /name="returnTo" value="\/messages"/);
 });
+
+test("calendar items stay visible without expanding the message", () => {
+  const message = {
+    logicalMessageId: "visible",
+    subject: "Retkipäivä",
+    sender: "Opettaja",
+    content: "Retki on tiistaina.",
+    sourceType: "message" as const,
+    children: ["Valtteri"],
+    members: [{ accountId: "school", studentNumber: "101", child: "Valtteri", messageId: 5 }],
+    displaySentAt: new Date("2026-09-15T09:00:00Z"),
+  } as unknown as Parameters<typeof renderMessageCard>[0]["message"];
+
+  const html = renderMessageCard({
+    message,
+    analysis: {
+      calendarItems: [{ date: "2026-09-22", time: "09:00", title: "Retki", endDate: null, description: null }],
+      hasOtherContent: false,
+    } as unknown as Parameters<typeof renderMessageCard>[0]["analysis"],
+    pending: false,
+  });
+
+  // The message body is what collapses; the checkbox must not be inside it.
+  assert.ok(html.indexOf("</details>") < html.indexOf("Kalenteriin:"));
+  assert.ok(html.indexOf("Retki on tiistaina.") < html.indexOf("</details>"));
+});

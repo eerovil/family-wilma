@@ -111,6 +111,6 @@ export function renderMessageCard(options: {
 <div>${message.sourceType === "notice" ? '<span class="pill">Tiedote</span>' : ""}${message.children.map((child) => `<span class="pill">${escapeHtml(child)}</span>`).join("")}${hasOtherContent ? '<span class="pill">Sisältää muutakin tärkeää</span>' : ""}</div>
 <details>
 <summary><h2>${escapeHtml(message.subject)}</h2><p class="muted">${escapeHtml(message.sender)} · ${escapeHtml(message.displaySentAt.toLocaleString("fi-FI", { timeZone: "Europe/Helsinki" }))} · ${state}</p></summary>
-<div class="message-body">${escapeHtml(message.content)}</div>${items}
-</details></article>`;
+<div class="message-body">${escapeHtml(message.content)}</div>
+</details>${items}</article>`;
 }
