@@ -31,11 +31,66 @@ test("homework fetch combines every child into one newest-first list", async () 
   } as unknown as AppConfig;
 
   try {
-    const result = await new WilmaService(config).fetchHomework();
+    const result = await new WilmaService(config, () => new Date(), {
+      openSession: async () => ({ get: async () => "<html><body></body></html>" }),
+    }).fetchHomework();
     assert.deepEqual(result.map((item) => [item.date, item.child, item.homework]), [
       ["2026-09-15", "Preferred Second", "Newest"],
       ["2026-09-14", "First Child", "Older"],
     ]);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
+
+test("homework fetch adds lesson-diary entries and survives a diary failure", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  WilmaClient.listStudents = async () => [
+    { studentNumber: "101", name: "First Child", href: "/profiles/101" },
+    { studentNumber: "202", name: "Second Child", href: "/profiles/202" },
+  ];
+  WilmaClient.login = async (profile) => ({
+    overview: {
+      get: async () => ({
+        homework: profile.studentNumber === "101"
+          ? [{ date: "2026-09-15", subject: "English", subjectCode: "EN", homework: "Workbook", teacher: "B", teacherCode: "B" }]
+          : [],
+      }),
+    },
+  }) as unknown as WilmaClient;
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [],
+    }],
+  } as unknown as AppConfig;
+  const diaryErrors: unknown[] = [];
+
+  try {
+    const result = await new WilmaService(config, () => new Date("2026-09-16T05:00:00Z"), {
+      onError: (error) => diaryErrors.push(error),
+      openSession: async (_account, studentNumber) => {
+        if (studentNumber === "202") throw new Error("diary unavailable");
+        return {
+          get: async (path) => path === "/"
+            ? '<a href="/!101/groups/9">MA 3A MA06 : Matematiikka</a>'
+            : `<table><tr><th>Pvm</th><th>Tuntinro</th><th>Tunnin aihe</th><th>Tunnin opettaja</th></tr>
+               <tr><td>16.09.2026</td><td></td><td>kertotaulut kotona s.77</td><td>Helena</td></tr>
+               <tr><td>20.08.2026</td><td></td><td>Too old</td><td>Helena</td></tr></table>`,
+        };
+      },
+    }).fetchHomework();
+
+    assert.deepEqual(result.map((item) => [item.date, item.subject, item.homework, item.source]), [
+      ["2026-09-16", "Matematiikka", "kertotaulut kotona s.77", "diary"],
+      ["2026-09-15", "English", "Workbook", "homework"],
+    ]);
+    assert.equal(diaryErrors.length, 1);
   } finally {
     WilmaClient.listStudents = originalListStudents;
     WilmaClient.login = originalLogin;

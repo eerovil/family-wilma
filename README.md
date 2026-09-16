@@ -8,7 +8,18 @@ The normal daily-use screen intentionally has two primary actions:
 - **Näytä viimeiset 30 päivää**
 
 **Kotitehtävät** reads each discovered child's Wilma overview and presents one combined
-chronological list, newest first. Nothing is grouped. The card at the top
+chronological list, newest first, under one weekday-and-date heading per day
+(`ke 16.9.2026`). Only the date groups; children and subjects stay interleaved.
+
+Many teachers write the homework into the lesson diary (Tuntipäiväkirja) instead of Wilma's
+separate homework field, so the view also reads each child's per-subject group pages and shows
+the last 14 days of diary entries, marked with a **Tuntipäiväkirja** pill. The diary text is
+shown exactly as the teacher wrote it — topic and homework together — because splitting the two
+apart reliably is not possible. Subjects whose teacher keeps no diary simply do not appear. If
+the diary cannot be read, the rest of the homework is still shown and the failure is reported
+through the normal error channel.
+
+The card at the top
 also reads Einari's latest dated homework block from the configured public Peda.net class page.
 If that page contains alternatives for different groups, they are shown verbatim rather than
 guessed. A Peda.net failure affects only that card; Wilma homework remains available.

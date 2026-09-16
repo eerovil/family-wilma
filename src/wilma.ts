@@ -1,5 +1,6 @@
-import { WilmaClient, type HomeworkItem, type StudentInfo, type WilmaProfile } from "@wilm-ai/wilma-client";
+import { WilmaClient, WilmaSession, type HomeworkItem, type StudentInfo, type WilmaProfile } from "@wilm-ai/wilma-client";
 import type { AppConfig, ProfileMapping, WilmaAccountConfig } from "./config.js";
+import { diaryCutoff, parseDiaryGroups, parseGroupDiary } from "./wilma-diary.js";
 
 export class MfaCodeRequiredError extends Error {
   constructor(readonly accountId: string) {
@@ -24,6 +25,8 @@ export interface FetchedHomework extends HomeworkItem {
   accountId: string;
   studentNumber: string;
   child: string;
+  /** "diary" marks a lesson-diary entry; absent means Wilma's own homework field. */
+  source?: "homework" | "diary";
 }
 
 export interface SourceCalendarItem {
@@ -56,12 +59,35 @@ export interface WilmaBundle {
   lessonWindow: LessonWindow | null;
 }
 
+/** The authenticated, student-prefixed page reads the lesson diary needs. */
+export interface DiaryPageReader {
+  get(path: string): Promise<string>;
+}
+
+export interface DiaryOptions {
+  onError?: (error: unknown) => void;
+  openSession?: (account: WilmaAccountConfig, studentNumber: string) => Promise<DiaryPageReader>;
+}
+
+async function openWilmaSession(
+  account: WilmaAccountConfig,
+  studentNumber: string,
+): Promise<DiaryPageReader> {
+  const session = new WilmaSession(account.baseUrl, { studentNumber });
+  await session.login(account.username, account.password);
+  return { get: async (path) => (await session.get(path)).text() };
+}
+
 export class WilmaService {
   private readonly mfaCodes = new Map<string, string>();
   private readonly pendingDiscoveries = new Map<string, Promise<StudentInfo[]>>();
   private readonly pendingClients = new Map<string, Promise<WilmaClient>>();
 
-  constructor(private readonly config: AppConfig, private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly config: AppConfig,
+    private readonly now: () => Date = () => new Date(),
+    private readonly diary: DiaryOptions = {},
+  ) {}
 
   submitMfaCode(accountId: string, code: string): void {
     if (!this.config.wilmaAccounts.some((account) => account.id === accountId)) {
@@ -89,7 +115,9 @@ export class WilmaService {
           accountId: account.id,
           studentNumber: profile.studentNumber,
           child: profile.child,
+          source: "homework" as const,
         })));
+        homework.push(...await this.fetchLessonDiary(account, profile));
       }
     }
     homework.sort((left, right) => right.date.localeCompare(left.date)
@@ -97,6 +125,43 @@ export class WilmaService {
       || left.subject.localeCompare(right.subject, "fi"));
     this.clearCompletedFetchState();
     return homework;
+  }
+
+  /**
+   * Lesson-diary entries for one student, newest first and limited to the diary
+   * window. Wilma's own homework field is empty for teachers who write homework
+   * into the diary, so both sources are shown. A diary failure must never hide
+   * the homework that was already fetched, so it is reported and dropped.
+   */
+  private async fetchLessonDiary(
+    account: WilmaAccountConfig,
+    profile: ProfileMapping,
+  ): Promise<FetchedHomework[]> {
+    const notBefore = diaryCutoff(this.now());
+    try {
+      const session = await (this.diary.openSession ?? openWilmaSession)(account, profile.studentNumber);
+      const groups = parseDiaryGroups(await session.get("/"));
+      const entries: FetchedHomework[] = [];
+      for (const group of groups) {
+        const page = await session.get(`/groups/${group.groupId}`);
+        entries.push(...parseGroupDiary(page, group, notBefore).map((entry) => ({
+          accountId: account.id,
+          studentNumber: profile.studentNumber,
+          child: profile.child,
+          date: entry.date,
+          subject: entry.subject,
+          subjectCode: entry.subjectCode,
+          homework: entry.text,
+          teacher: entry.teacher,
+          teacherCode: "",
+          source: "diary" as const,
+        })));
+      }
+      return entries;
+    } catch (error) {
+      this.diary.onError?.(error);
+      return [];
+    }
   }
 
   async fetchAll(options: { sentAfter?: Date; includeLessons?: boolean } = {}): Promise<WilmaBundle> {

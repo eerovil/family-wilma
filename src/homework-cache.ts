@@ -17,13 +17,19 @@ export function homeworkCacheIdentity(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+/**
+ * Bumped when the stored Wilma homework payload changes shape, so an old
+ * snapshot is discarded instead of being shown as if it were complete.
+ */
+const WILMA_PAYLOAD_VERSION = "wilma-homework-with-diary-v1";
+
 export function wilmaCacheIdentity(accounts: WilmaAccountConfig[]): string {
-  return homeworkCacheIdentity(accounts.map((account) => ({
+  return homeworkCacheIdentity([WILMA_PAYLOAD_VERSION, ...accounts.map((account) => ({
     id: account.id,
     baseUrl: account.baseUrl,
     username: account.username,
     profiles: account.profiles,
-  })));
+  }))]);
 }
 
 export const wilmaHomeworkCacheIdentity = wilmaCacheIdentity;

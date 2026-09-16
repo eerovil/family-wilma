@@ -54,7 +54,9 @@ const analyzer = new MessageAnalyzer(config.anthropicApiKey, store, anthropic ??
 const batches: AnalysisBatchAdapter = config.analysisMode === "manual"
   ? new ManualAnalysisAdapter(config.dataDir, store)
   : new AnalysisBatchService(store, analyzer, anthropic!);
-const wilma = new WilmaService(config);
+const wilma = new WilmaService(config, () => new Date(), {
+  onError: (error) => reportError(error, { operation: "homework.diary.fetch" }),
+});
 const pedanetHomework = config.pedanetHomeworkUrl && config.pedanetHomeworkModuleId
   ? new PedanetHomeworkService(config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId)
   : null;

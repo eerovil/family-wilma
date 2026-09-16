@@ -43,8 +43,10 @@ Two consequences worth being deliberate about:
   contain dates and event titles taken from messages about specific children. It is stored
   because the app cannot work otherwise — but that is the ceiling, not a licence to store more.
 - The homework snapshot contains child names, student numbers, subjects, teachers, and raw
-  homework text. It is kept only in the mode-0600 household SQLite file, replaced after each
-  successful refresh, and never logged or sent to Sentry.
+  homework text, including the last 14 days of lesson-diary entries. Diary text is written for a
+  class rather than for one child, but it is school content about a named child all the same. It
+  is kept only in the mode-0600 household SQLite file, replaced after each successful refresh,
+  and never logged or sent to Sentry.
 - The message snapshot contains the raw bodies of messages from the last 30 days. It has the same
   mode-0600 and no-logging restrictions and is replaced after each successful refresh; it is not
   a historical archive.
