@@ -16,3 +16,6 @@ data-localdev/
 
 *.log
 .DS_Store
+
+# Written by the deploy recipe on the server so a deploy can be rolled back.
+.deployment-rollback-sha
