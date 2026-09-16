@@ -438,6 +438,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (!sourceId) return send(res, 400, busyPage("Kalenterikohdetta ei tunnistettu."));
       // An unchecked checkbox is simply absent from the post, which is the drop.
       store.setCalendarSourceDropped(sourceId, form.get("keep") !== "1");
+      // The in-page save wants no navigation at all; a no-script post still redirects.
+      if (req.headers["x-family-wilma-async"] === "1") {
+        res.writeHead(204, { "cache-control": "no-store" });
+        res.end();
+        return;
+      }
       return redirect(res, safeReturnPath(form.get("returnTo")));
     }
     if (req.method === "GET" && url.pathname === "/setup") return send(res, 200, setupPage(email));

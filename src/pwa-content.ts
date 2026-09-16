@@ -30,13 +30,38 @@ export const OFFLINE_PAGE = `<!doctype html>
 
 export const PWA_CLIENT_SCRIPT = `"use strict";
 (function () {
-  // A checkbox that posts its own form on change. Without this the page still
-  // works: the form's own submit button is what a no-script browser uses.
+  // A checkbox that saves itself. Reloading the page instead would throw the
+  // reader back to the top of a long list and close the open message, so the
+  // post is sent in the background and only this row's styling changes. The
+  // form's own submit button is what a no-script browser uses.
   document.addEventListener("change", function (event) {
-    var target = event.target;
-    if (!target || !target.matches || !target.matches("[data-autosubmit]")) return;
-    var form = target.form;
-    if (form) form.submit();
+    var box = event.target;
+    if (!box || !box.matches || !box.matches("[data-autosubmit]")) return;
+    var form = box.form;
+    if (!form || !window.fetch) return;
+    var label = form.querySelector("label");
+    var body = new URLSearchParams();
+    var fields = form.querySelectorAll("input[type=hidden]");
+    for (var index = 0; index < fields.length; index += 1) {
+      body.append(fields[index].name, fields[index].value);
+    }
+    if (box.checked) body.append(box.name, box.value);
+    box.disabled = true;
+    fetch(form.action, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/x-www-form-urlencoded", "x-family-wilma-async": "1" },
+      body: body.toString(),
+    }).then(function (response) {
+      if (!response.ok) throw new Error("save failed");
+      if (label) label.className = box.checked ? "" : "muted dropped";
+      form.removeAttribute("data-save-failed");
+    }).catch(function () {
+      box.checked = !box.checked;
+      form.setAttribute("data-save-failed", "1");
+    }).then(function () {
+      box.disabled = false;
+    });
   });
 }());
 (function () {
