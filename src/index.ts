@@ -9,7 +9,7 @@ import { ManualAnalysisAdapter } from "./manual-analysis.js";
 import { GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
-import { MESSAGE_CARD_CSS, renderMessageCard } from "./message-view.js";
+import { MESSAGE_CARD_CSS, renderMessageCard, renderMessageFilters } from "./message-view.js";
 import { AnalysisStore } from "./store.js";
 import { MfaCodeRequiredError, WilmaService, type FetchedMessage } from "./wilma.js";
 import { MessageLoadJob, type MessageLoadSnapshot } from "./message-load.js";
@@ -249,8 +249,8 @@ function busyPage(message: string): string {
   return layout("Toiminto käynnissä", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Toiminto käynnissä</h1><div class="card">${escapeHtml(message)}</div>`);
 }
 
-function messageCards(messages: FetchedMessage[]): string {
-  return groupMessages(messages).map((message) => renderMessageCard({
+function messageCards(messages: GroupedMessage[]): string {
+  return messages.map((message) => renderMessageCard({
     message,
     analysis: analyzer.cached(message),
     pending: analysisIdentities(message).some((identity) => store.hasPending(identity)),
@@ -289,7 +289,8 @@ function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): str
   const refreshButton = active
     ? '<button class="secondary" type="submit" disabled>Päivitetään…</button>'
     : '<button class="secondary" type="submit">Päivitä viestit</button>';
-  const hasUnanalyzed = groupMessages(load.messages).some((message) => !analyzer.cached(message));
+  const groupedMessages = groupMessages(load.messages);
+  const hasUnanalyzed = groupedMessages.some((message) => !analyzer.cached(message));
   const analyzeDisabled = active || !hasUnanalyzed;
   const analyzeLabel = hasUnanalyzed
     ? config.analysisMode === "manual" ? "Jonota kaikki ja synkkaa kalenteri" : "Analysoi kaikki ja synkkaa kalenteri"
@@ -297,9 +298,10 @@ function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): str
   const analyzeButton = load.messages.length
     ? `<form method="post" action="/messages/analyze"><button type="submit"${analyzeDisabled ? " disabled" : ""}>${analyzeLabel}</button></form>`
     : "";
-  const cards = messageCards(load.messages) || '<p class="muted">Ei viestejä.</p>';
+  const filters = renderMessageFilters(groupedMessages);
+  const cards = messageCards(groupedMessages) || '<p class="muted">Ei viestejä.</p>';
   return layout("Viimeiset 30 päivää", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viimeiset 30 päivää</h1>
-  <form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}${cards}`,
+  <form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}${filters}${cards}<script defer src="/message-filters.js"></script>`,
   active || batchesState.active ? '<meta http-equiv="refresh" content="5">' : "");
 }
 

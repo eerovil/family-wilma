@@ -186,6 +186,9 @@ test("health stays public while application pages require Google sign-in", async
     assert.match(messagesHtml, /Cached message/);
     assert.match(messagesHtml, /action="\/messages\/refresh"/);
     assert.match(messagesHtml, /Analysoi kaikki ja synkkaa kalenteri/);
+    assert.match(messagesHtml, /data-message-filter="account:school"/);
+    assert.match(messagesHtml, /data-message-filter="child:Test child"/);
+    assert.match(messagesHtml, /<script defer src="\/message-filters\.js"><\/script>/);
     assert.doesNotMatch(messagesHtml, /type="checkbox"/);
 
     const groupedMessage = groupMessages([cachedMessage])[0];

@@ -55,6 +55,7 @@ export const PUBLIC_PWA_PATHS = [
   "/manifest.webmanifest",
   "/offline",
   "/pwa.js",
+  "/message-filters.js",
   "/favicon.svg",
   "/icon-192.png",
   "/icon-512.png",
