@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WilmaClient, type WilmaProfile } from "@wilm-ai/wilma-client";
+import { WilmaClient, WilmaSession, type WilmaProfile } from "@wilm-ai/wilma-client";
 import type { AppConfig } from "./config.js";
 import { MfaCodeRequiredError, WilmaService } from "./wilma.js";
 
@@ -19,6 +19,7 @@ test("homework fetch combines every child into one newest-first list", async () 
           : [{ date: "2026-09-15", subject: "Finnish", subjectCode: "FI", homework: "Newest", teacher: "B", teacherCode: "B" }],
       }),
     },
+    exams: { list: async () => [] },
   }) as unknown as WilmaClient;
   const config = {
     wilmaAccounts: [{
@@ -34,7 +35,7 @@ test("homework fetch combines every child into one newest-first list", async () 
     const result = await new WilmaService(config, () => new Date(), {
       openSession: async () => ({ get: async () => "<html><body></body></html>" }),
     }).fetchHomework();
-    assert.deepEqual(result.map((item) => [item.date, item.child, item.homework]), [
+    assert.deepEqual(result.homework.map((item) => [item.date, item.child, item.homework]), [
       ["2026-09-15", "Preferred Second", "Newest"],
       ["2026-09-14", "First Child", "Older"],
     ]);
@@ -59,6 +60,7 @@ test("homework fetch adds lesson-diary entries and survives a diary failure", as
           : [],
       }),
     },
+    exams: { list: async () => [] },
   }) as unknown as WilmaClient;
   const config = {
     wilmaAccounts: [{
@@ -86,7 +88,7 @@ test("homework fetch adds lesson-diary entries and survives a diary failure", as
       },
     }).fetchHomework();
 
-    assert.deepEqual(result.map((item) => [item.date, item.subject, item.homework, item.source]), [
+    assert.deepEqual(result.homework.map((item) => [item.date, item.subject, item.homework, item.source]), [
       ["2026-09-16", "Matematiikka", "kertotaulut kotona s.77", "diary"],
       ["2026-09-15", "English", "Workbook", "homework"],
     ]);
@@ -511,6 +513,143 @@ test("a non-MFA fetch failure clears cached Wilma clients before retry", async (
     await service.fetchAll();
     assert.equal(discoveryCalls, 2);
     assert.equal(loginCalls, 2);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
+
+test("homework refresh logs each child in once and reads the diary and exams through that login", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  const logins: string[] = [];
+  const diaryPaths: string[] = [];
+  WilmaClient.listStudents = async () => [
+    { studentNumber: "101", name: "First Child", href: "/profiles/101" },
+    { studentNumber: "202", name: "Second Child", href: "/profiles/202" },
+  ];
+  WilmaClient.login = async (profile) => {
+    logins.push(profile.studentNumber ?? "");
+    const session = new WilmaSession("https://school.inschool.fi", { studentNumber: profile.studentNumber ?? null });
+    session.get = async (path: string) => {
+      diaryPaths.push(`${profile.studentNumber}${path}`);
+      return new Response("<html><body></body></html>");
+    };
+    return {
+      session,
+      overview: { get: async () => ({ homework: [] }) },
+      exams: {
+        list: async () => [{
+          wilmaId: Number(profile.studentNumber), subject: "Math", dateString: "2026-09-20",
+          description: "Chapter 3", notes: "", teacher: "A",
+        }],
+      },
+    } as unknown as WilmaClient;
+  };
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [],
+    }],
+  } as unknown as AppConfig;
+
+  try {
+    const result = await new WilmaService(config, () => new Date("2026-09-16T05:00:00Z")).fetchHomework();
+    assert.deepEqual(logins, ["101", "202"]);
+    assert.deepEqual(diaryPaths, ["101/", "202/"]);
+    assert.deepEqual(result.exams.map((exam) => [exam.sourceId, exam.child, exam.description]), [
+      ["wilma-exam:school:101:101", "First Child", "Chapter 3"],
+      ["wilma-exam:school:202:202", "Second Child", "Chapter 3"],
+    ]);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
+
+test("message fetch reuses saved messages but still opens new messages and every notice", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  const opened: string[] = [];
+  WilmaClient.listStudents = async () => [{ studentNumber: "101", name: "Child", href: "/profiles/101" }];
+  WilmaClient.login = async () => ({
+    messages: {
+      list: async () => [
+        { wilmaId: 1, subject: "Saved", sentAt: new Date("2026-09-14T08:00:00Z") },
+        { wilmaId: 2, subject: "New", sentAt: new Date("2026-09-15T08:00:00Z") },
+      ],
+      get: async (wilmaId: number) => {
+        opened.push(`message ${wilmaId}`);
+        return { wilmaId, subject: "New", senderName: "Teacher", sentAt: new Date("2026-09-15T08:00:00Z"), content: "Fresh body" };
+      },
+    },
+    news: {
+      list: async () => [{ wilmaId: 1, title: "Notice", published: new Date("2026-09-14T08:00:00Z") }],
+      get: async (wilmaId: number) => {
+        opened.push(`notice ${wilmaId}`);
+        return { wilmaId, title: "Notice", content: "Notice body", published: new Date("2026-09-14T08:00:00Z") };
+      },
+    },
+    exams: { list: async () => [] },
+  }) as unknown as WilmaClient;
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [{ studentNumber: "101", child: "Renamed" }],
+    }],
+  } as unknown as AppConfig;
+  const saved = {
+    accountId: "school", studentNumber: "101", child: "Old name", messageId: 1,
+    subject: "Saved", sender: "Teacher", sentAt: new Date("2026-09-14T08:00:00Z"), content: "Saved body",
+  };
+
+  try {
+    const bundle = await new WilmaService(config).fetchAll({
+      sentAfter: new Date("2026-08-16T00:00:00Z"),
+      known: (accountId, studentNumber, messageId) =>
+        accountId === "school" && studentNumber === "101" && messageId === 1 ? saved : undefined,
+    });
+    assert.deepEqual(opened, ["message 2", "notice 1"]);
+    const reused = bundle.messages.find((message) => message.messageId === 1 && message.sourceType !== "notice");
+    assert.equal(reused?.content, "Saved body");
+    assert.equal(reused?.child, "Renamed");
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
+
+test("calendar-source fetch reads exams without listing messages or notices", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  WilmaClient.listStudents = async () => [{ studentNumber: "101", name: "Child", href: "/profiles/101" }];
+  WilmaClient.login = async () => ({
+    messages: { list: async () => { throw new Error("messages must not be listed"); } },
+    news: { list: async () => { throw new Error("notices must not be listed"); } },
+    exams: {
+      list: async () => [{ wilmaId: 7, subject: "Math", dateString: "2026-09-20", description: "", notes: "", teacher: "" }],
+    },
+  }) as unknown as WilmaClient;
+  const config = {
+    wilmaAccounts: [{
+      id: "school",
+      baseUrl: "https://school.inschool.fi",
+      username: "guardian",
+      password: "secret",
+      profiles: [],
+    }],
+  } as unknown as AppConfig;
+
+  try {
+    const bundle = await new WilmaService(config).fetchAll({ includeMessages: false });
+    assert.deepEqual(bundle.messages, []);
+    assert.deepEqual(bundle.structuredCalendarItems.map((item) => item.sourceId), ["wilma-exam:school:101:7"]);
   } finally {
     WilmaClient.listStudents = originalListStudents;
     WilmaClient.login = originalLogin;

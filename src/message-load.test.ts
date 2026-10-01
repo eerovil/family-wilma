@@ -113,3 +113,32 @@ test("failed refresh retains the cached message snapshot", async () => await wit
   assert.equal(job.snapshot().state, "error");
   assert.equal(job.snapshot().messages[0]?.subject, "Stored");
 }));
+
+test("refresh offers saved messages for reuse but never notices or empty saves", async () => await withCache(async (_dir, cache) => {
+  cache.put({
+    messages: [
+      message("Stored"),
+      { ...message("Empty"), messageId: 2, content: "" },
+      { ...message("Notice"), messageId: 3, sourceType: "notice" as const },
+    ],
+    structuredCalendarItems: [],
+  }, "2026-09-15T12:00:00.000Z");
+  const lookups: Array<string | undefined> = [];
+  const job = new MessageLoadJob({
+    cache,
+    fetch: async (options) => {
+      lookups.push(
+        options.known("school", "1", 1)?.subject,
+        options.known("school", "1", 2)?.subject,
+        options.known("school", "1", 3)?.subject,
+        options.known("other", "1", 1)?.subject,
+      );
+      return emptyBundle();
+    },
+    now: () => new Date("2026-09-15T12:15:00.000Z"),
+  });
+
+  job.start({ force: true });
+  await job.wait();
+  assert.deepEqual(lookups, ["Stored", undefined, undefined, undefined]);
+}));

@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { URL } from "node:url";
 import { loadConfig } from "./config.js";
 import { analysisIdentities, analysisIdentity, MessageAnalyzer } from "./analysis.js";
-import { AnalyzeSyncJob, type AnalyzeSyncSnapshot } from "./analyze-sync.js";
+import { AnalyzeSyncJob, formatDuration, type AnalyzeSyncSnapshot } from "./analyze-sync.js";
 import { AnalysisBatchService, type AnalysisBatchAdapter } from "./batch-analysis.js";
 import { ManualAnalysisAdapter } from "./manual-analysis.js";
 import { GoogleCalendarService } from "./google.js";
@@ -22,6 +22,8 @@ import { MessageCacheStore } from "./message-cache.js";
 import { groupMessages, type GroupedMessage } from "./message-group.js";
 import { messageCalendarProjection, type AnalyzedMessage } from "./message-calendar.js";
 import { pollHead } from "./live-refresh.js";
+import { installWilmaRequestLimits, wilmaRequestCount } from "./wilma-http.js";
+import { calendarSyncMustWait, homeworkMustWait, messageRefreshBlocked, type WilmaJobStates } from "./wilma-turn.js";
 import { transientStatus } from "./message-status.js";
 import { THEME_COLOR } from "./pwa-content.js";
 import { pwaAsset } from "./pwa.js";
@@ -42,6 +44,7 @@ process.on("uncaughtException", (error) => reportFatal(error, "process.uncaught"
 process.on("unhandledRejection", (reason) => reportFatal(reason, "process.unhandled_rejection"));
 
 const config = loadConfig();
+installWilmaRequestLimits();
 configureErrorReportingSecrets([
   config.anthropicApiKey,
   config.googleClientSecret,
@@ -59,7 +62,13 @@ const wilma = new WilmaService(config, () => new Date(), {
   onError: (error) => reportError(error, { operation: "homework.diary.fetch" }),
 });
 const pedanetHomework = config.pedanetHomeworkUrl && config.pedanetHomeworkModuleId
-  ? new PedanetHomeworkService(config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId)
+  ? new PedanetHomeworkService(
+    config.pedanetHomeworkUrl,
+    config.pedanetHomeworkModuleId,
+    fetch,
+    () => new Date(),
+    (error) => reportError(error, { operation: "homework.pedanet.heading" }),
+  )
   : null;
 const homeworkCache = new HomeworkCacheStore(config.dataDir, {
   wilma: wilmaCacheIdentity(config.wilmaAccounts),
@@ -70,13 +79,8 @@ const homeworkCache = new HomeworkCacheStore(config.dataDir, {
 });
 const homeworkRefresh = new HomeworkRefreshJob({
   cache: homeworkCache,
-  waitForWilmaTurn: async () => {
-    while (otherWilmaOperationActive()) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  },
-  fetchWilma: () => wilma.fetchHomework(),
-  fetchExams: () => wilma.fetchExams(),
+  waitForWilmaTurn: () => waitWhile(() => homeworkMustWait(wilmaJobStates())),
+  fetchWilma: () => timed("homework refresh", () => wilma.fetchHomework()),
   ...(pedanetHomework ? { fetchPedanet: () => pedanetHomework.recent() } : {}),
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error, source) => reportError(error, { operation: `homework.${source}.fetch` }),
@@ -87,7 +91,7 @@ const secureCookies = config.baseUrl.startsWith("https://");
 const messageCache = new MessageCacheStore(config.dataDir, wilmaCacheIdentity(config.wilmaAccounts));
 const messageLoad = new MessageLoadJob({
   cache: messageCache,
-  fetch: (options) => wilma.fetchAll(options),
+  fetch: (options) => timed("message refresh", () => wilma.fetchAll(options)),
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error) => reportError(error, { operation: "message.load" }),
 });
@@ -96,13 +100,13 @@ const analyzeSync = new AnalyzeSyncJob({
   refresh: () => batches.refresh(),
   pending: (message) => analysisIdentities(message).some((identity) => store.hasPending(identity)),
   statuses: () => batches.statuses(),
+  waitForWilmaTurn: () => waitWhile(() => calendarSyncMustWait(wilmaJobStates())),
+  log: (line) => console.log(line),
   sync: async () => {
-    const bundle = await wilma.fetchAll({
-      sentAfter: new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000),
-      includeLessons: true,
-    });
+    const messages = await messagesForCalendarSync();
+    const bundle = await timed("calendar sync", () => wilma.fetchAll({ includeLessons: true, includeMessages: false }));
     if (!bundle.lessonWindow) throw new Error("Lesson window was not returned");
-    const messageProjection = messageCalendarProjection(cachedMessages(groupMessages(bundle.messages)));
+    const messageProjection = messageCalendarProjection(cachedMessages(groupMessages(messages)));
     return await calendar.sync({
       sharedItems: [...bundle.structuredCalendarItems, ...messageProjection.items],
       sharedSupersededSourcePrefixes: messageProjection.supersededSourcePrefixes,
@@ -114,6 +118,41 @@ const analyzeSync = new AnalyzeSyncJob({
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error) => reportError(error, { operation: "analysis_and_calendar.sync" }),
 });
+
+function wilmaJobStates(): WilmaJobStates {
+  const homework = homeworkRefresh.snapshot();
+  return {
+    homework: { state: homework.state, waiting: homework.waiting },
+    messages: messageLoad.snapshot().state,
+    sync: analyzeSync.snapshot().state,
+  };
+}
+
+async function waitWhile(busy: () => boolean): Promise<void> {
+  while (busy()) await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
+/** Writes one line per finished Wilma job to the server log: how long it took and how many requests it made. */
+async function timed<T>(name: string, run: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  const requestsBefore = wilmaRequestCount();
+  try {
+    return await run();
+  } finally {
+    console.log(`${name} ${formatDuration(Date.now() - started)} (${wilmaRequestCount() - requestsBefore} Wilma requests)`);
+  }
+}
+
+/**
+ * The calendar sync uses the saved 30-day message list instead of fetching every
+ * message again. A list older than the freshness window is refreshed first, which
+ * is cheap because saved messages are not opened again. If that refresh fails,
+ * the saved list is still used; its own error shows on the message page.
+ */
+async function messagesForCalendarSync(): Promise<FetchedMessage[]> {
+  if (messageLoad.needsRefresh() && messageLoad.start({ force: true })) await messageLoad.wait();
+  return messageLoad.snapshot().messages;
+}
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] ?? char);
@@ -181,6 +220,11 @@ function homeworkPage(snapshot: HomeworkRefreshSnapshot): string {
 
 function homeworkRefreshStatus(snapshot: HomeworkRefreshSnapshot): { html: string; polling: boolean } {
   const saved = homeworkSavedTimes(snapshot);
+  if (snapshot.state === "running" && snapshot.waiting) {
+    const sync = analyzeSync.snapshot().state;
+    const waitingFor = sync === "syncing" || sync === "mfa" ? "kalenterin synkronointia" : "viestien hakua";
+    return { html: `<div class="card"><strong>Odottaa ${waitingFor}…</strong>${saved}<p class="muted">Näytetään tallennetut tiedot. Päivitys alkaa, kun Wilma vapautuu.</p></div>`, polling: true };
+  }
   if (snapshot.state === "running") {
     return { html: `<div class="card"><strong>Kotitehtäviä päivitetään…</strong>${saved}<p class="muted">Näytetään tallennetut tiedot. Päivitys jatkuu taustalla.</p></div>`, polling: true };
   }
@@ -310,7 +354,8 @@ function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): str
     : load.state === "error"
       ? `<div class="error">${escapeHtml(load.error ?? "Viestien päivittäminen epäonnistui.")}</div>${saved}`
       : saved;
-  const refreshButton = active
+  const refreshBusy = load.state === "fetching" || sync.state === "syncing" || sync.state === "mfa";
+  const refreshButton = refreshBusy
     ? '<button class="secondary" type="submit" disabled>Päivitetään…</button>'
     : '<button class="secondary" type="submit">Päivitä viestit</button>';
   const groupedMessages = groupMessages(load.messages);
@@ -427,7 +472,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return send(res, 200, homeworkPage(homeworkRefresh.snapshot()));
     }
     if (req.method === "POST" && url.pathname === "/homework/refresh") {
-      if (otherWilmaOperationActive()) {
+      if (homeworkMustWait(wilmaJobStates())) {
         return send(res, 409, busyPage("Toinen Wilma-toiminto on vielä käynnissä. Yritä kotitehtävien päivittämistä sen valmistuttua."));
       }
       const runId = homeworkRefresh.start({ force: true });
@@ -458,21 +503,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (homework.state === "running" || homework.state === "mfa") {
         return send(res, 409, busyPage("Kotitehtävien päivitys on vielä käynnissä. Yritä viestien lataamista sen valmistuttua."));
       }
-      const syncState = analyzeSync.snapshot().state;
-      if (syncState === "analyzing" || syncState === "syncing" || syncState === "mfa") {
-        return send(res, 409, busyPage("Analysointi tai kalenterin synkronointi on vielä käynnissä. Yritä viestien päivittämistä sen valmistuttua."));
+      if (messageRefreshBlocked(wilmaJobStates())) {
+        return send(res, 409, busyPage("Kalenterin synkronointi on vielä käynnissä. Yritä viestien päivittämistä sen valmistuttua."));
       }
       messageLoad.start({ force: true });
       return redirect(res, "/messages");
     }
     if (req.method === "GET" && url.pathname === "/messages") {
       void batches.refresh().catch((error) => reportError(error, { operation: "analysis.batch.refresh" }));
-      const homeworkState = homeworkRefresh.snapshot().state;
-      const syncState = analyzeSync.snapshot().state;
-      if (homeworkState !== "running" && homeworkState !== "mfa"
-        && syncState !== "analyzing" && syncState !== "syncing" && syncState !== "mfa") {
-        messageLoad.start({ force: false });
-      }
+      if (!messageRefreshBlocked(wilmaJobStates())) messageLoad.start({ force: false });
       return send(res, 200, messageLoadingPage(messageLoad.snapshot()));
     }
     if (req.method === "POST" && url.pathname === "/messages/analyze") {
@@ -554,13 +593,6 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     });
     return send(res, 500, layout("Virhe", '<div class="error">Toiminto epäonnistui. Tarkista palvelimen asetukset ja yritä uudelleen.</div><p><a class="toplink" href="/">Etusivulle</a></p>'));
   }
-}
-
-function otherWilmaOperationActive(): boolean {
-  const messages = messageLoad.snapshot().state;
-  const syncState = analyzeSync.snapshot().state;
-  return messages === "fetching" || messages === "mfa"
-    || syncState === "analyzing" || syncState === "syncing" || syncState === "mfa";
 }
 
 function knownRoute(pathname: string): string {

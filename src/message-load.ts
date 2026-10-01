@@ -1,6 +1,6 @@
 import { cacheIsFresh } from "./cache-freshness.js";
 import type { MessageCacheStore } from "./message-cache.js";
-import type { FetchedMessage, WilmaBundle } from "./wilma.js";
+import type { FetchedMessage, KnownMessageLookup, WilmaBundle } from "./wilma.js";
 
 const RECENT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -16,7 +16,7 @@ export interface MessageLoadSnapshot {
 
 interface MessageLoadDependencies {
   cache: MessageCacheStore;
-  fetch(options: { sentAfter: Date }): Promise<WilmaBundle>;
+  fetch(options: { sentAfter: Date; known: KnownMessageLookup }): Promise<WilmaBundle>;
   mfaAccountId?(error: unknown): string | null;
   reportError?(error: unknown): void;
   now?: () => Date;
@@ -71,7 +71,10 @@ export class MessageLoadJob {
   private async run(): Promise<void> {
     try {
       const now = this.now();
-      const bundle = await this.dependencies.fetch({ sentAfter: new Date(now.getTime() - RECENT_DAYS * DAY_MS) });
+      const bundle = await this.dependencies.fetch({
+        sentAfter: new Date(now.getTime() - RECENT_DAYS * DAY_MS),
+        known: knownMessages(this.status.messages),
+      });
       const updatedAt = this.now().toISOString();
       this.dependencies.cache.put(bundle, updatedAt);
       this.status = {
@@ -96,4 +99,14 @@ export class MessageLoadJob {
   private now(): Date {
     return this.dependencies.now?.() ?? new Date();
   }
+}
+
+/** Saved inbox messages by account, student and id; notices are left out because they can be edited. */
+function knownMessages(messages: FetchedMessage[]): KnownMessageLookup {
+  const byKey = new Map<string, FetchedMessage>();
+  for (const message of messages) {
+    if (message.sourceType === "notice" || !message.content) continue;
+    byKey.set(`${message.accountId}\0${message.studentNumber}\0${message.messageId}`, message);
+  }
+  return (accountId, studentNumber, messageId) => byKey.get(`${accountId}\0${studentNumber}\0${messageId}`);
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CalendarSyncResult } from "./google.js";
-import { AnalyzeSyncJob } from "./analyze-sync.js";
+import { AnalyzeSyncJob, formatDuration } from "./analyze-sync.js";
 
 const message = {
   accountId: "school", studentNumber: "1", child: "Child", messageId: 1,
@@ -80,4 +80,39 @@ test("combined job resumes only the calendar phase after MFA", async () => {
   assert.equal(submitCalls, 1);
   assert.equal(syncCalls, 2);
   assert.equal(job.snapshot().state, "success");
+});
+
+test("combined job stays in the analysis state until Wilma is free, then syncs and logs the batch", async () => {
+  let release!: () => void;
+  const turn = new Promise<void>((resolve) => { release = resolve; });
+  const logged: string[] = [];
+  let pending = true;
+  let syncCalls = 0;
+  const job = new AnalyzeSyncJob({
+    submit: async () => {},
+    refresh: async () => { pending = false; },
+    pending: () => pending,
+    statuses: () => [],
+    sync: async () => { syncCalls += 1; return result; },
+    waitForWilmaTurn: async () => await turn,
+    log: (line) => logged.push(line),
+    pause: async () => {},
+  });
+
+  job.start([message]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(job.snapshot().state, "analyzing");
+  assert.equal(syncCalls, 0);
+  assert.match(logged[0] ?? "", /^analysis batch \d+\.\ds \(1 messages\)$/);
+
+  release();
+  await job.wait();
+  assert.equal(syncCalls, 1);
+  assert.equal(job.snapshot().state, "success");
+});
+
+test("durations read as seconds, minutes or hours", () => {
+  assert.equal(formatDuration(4_349), "4.3s");
+  assert.equal(formatDuration(38 * 60_000 + 12_000), "38m12s");
+  assert.equal(formatDuration(3 * 3_600_000 + 5 * 60_000), "3h5m");
 });
