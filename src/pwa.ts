@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { MANIFEST, OFFLINE_PAGE, PWA_CLIENT_SCRIPT, serviceWorkerSource } from "./pwa-content.js";
 import { MESSAGE_FILTER_CLIENT_SCRIPT } from "./message-view.js";
 import { MESSAGE_STATUS_CLIENT_SCRIPT } from "./message-status.js";
+import { LIVE_REFRESH_CLIENT_SCRIPT } from "./live-refresh.js";
 
 export interface PwaAsset {
   body: Buffer | string;
@@ -17,7 +18,7 @@ const icon512 = readFileSync(`${assetDir}generated/icon-512.png`);
 const maskableIcon512 = readFileSync(`${assetDir}generated/icon-maskable-512.png`);
 const appleTouchIcon = readFileSync(`${assetDir}generated/apple-touch-icon.png`);
 const generation = createHash("sha256").update(MANIFEST).update(OFFLINE_PAGE).update(PWA_CLIENT_SCRIPT)
-  .update(MESSAGE_FILTER_CLIENT_SCRIPT).update(MESSAGE_STATUS_CLIENT_SCRIPT)
+  .update(MESSAGE_FILTER_CLIENT_SCRIPT).update(MESSAGE_STATUS_CLIENT_SCRIPT).update(LIVE_REFRESH_CLIENT_SCRIPT)
   .update(favicon).update(icon192).update(icon512).update(maskableIcon512).update(appleTouchIcon)
   .digest("hex").slice(0, 12);
 
@@ -38,6 +39,7 @@ export function pwaAsset(pathname: string): PwaAsset | null {
     case "/pwa.js": return text(PWA_CLIENT_SCRIPT, "text/javascript; charset=utf-8");
     case "/message-filters.js": return text(MESSAGE_FILTER_CLIENT_SCRIPT, "text/javascript; charset=utf-8");
     case "/message-status.js": return text(MESSAGE_STATUS_CLIENT_SCRIPT, "text/javascript; charset=utf-8");
+    case "/live-refresh.js": return text(LIVE_REFRESH_CLIENT_SCRIPT, "text/javascript; charset=utf-8");
     case "/sw.js": return text(serviceWorkerSource(generation), "text/javascript; charset=utf-8", { "service-worker-allowed": "/" });
     case "/favicon.svg": return binary(favicon, "image/svg+xml");
     case "/icon-192.png": return binary(icon192, "image/png");
