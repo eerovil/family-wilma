@@ -22,7 +22,9 @@ through the normal error channel.
 The card at the top
 also reads Einari's latest dated homework block from the configured public Peda.net class page.
 If that page contains alternatives for different groups, they are shown verbatim rather than
-guessed. A Peda.net failure affects only that card; Wilma homework remains available.
+guessed. A Peda.net failure affects only that card; Wilma homework remains available. A dated
+heading whose weekday contradicts its date (`to 1.9.` written for Thursday 1.10.) is moved to the
+neighbouring month that fits; if none fits, only that day is left out and reported.
 
 The latest successful Wilma and Peda.net homework responses are stored in the private SQLite
 database. Opening the view renders that snapshot immediately and starts one coalesced background
@@ -41,8 +43,9 @@ and remove the site's stored data when that device changes hands.
 The latest successful 30-day message snapshot is stored in the private SQLite database and shown
 immediately after restarts. Opening the message list refreshes it in the background only when it
 is at least 15 minutes old; **Päivitä viestit** bypasses that window. Message loading never starts
-AI analysis, and repeated requests reuse the running fetch. Messages older than 30 days are not
-downloaded by this view. Messages with exactly the same sender, subject, and body on the same
+AI analysis, and repeated requests reuse the running fetch. A message already in the snapshot is
+not opened again, because Wilma messages do not change after sending; notices are always opened,
+because they can be edited. Messages older than 30 days are not downloaded by this view. Messages with exactly the same sender, subject, and body on the same
 Helsinki calendar date are shown once with every affected child. That logical message is also
 analyzed only once, and its shared calendar entries carry all affected child names. There is no
 multi-household tenancy, Redis, or external worker.
@@ -110,7 +113,9 @@ Family Wilma submits every currently displayed, uncached logical 30-day message 
 requests are priced at 50% of the normal API rates. A batch runs asynchronously and can take up
 to 24 hours; its persisted status is refreshed when the message page is opened. Calendar sync
 starts only after those message analyses have reached a terminal state. Opening or refreshing the
-page never submits analysis requests.
+page never submits analysis requests. The batch never reads Wilma, so homework and message
+refreshes keep working while it runs; only the short calendar step afterwards holds them. That step
+uses the saved message snapshot and reads only exams and timetables from Wilma.
 
 When nothing needs analysing the same button reads **Synkkaa kalenteri** and stays usable: it
 runs the calendar sync alone, which is the only way an unchecked calendar item or exam reaches
@@ -259,6 +264,11 @@ home page refreshes while the job is running, and closing the browser does not c
 latest completion counts or a retryable error remain visible on the home page. An application
 restart interrupts an active sync; it is never retried automatically because an interrupted
 Google write can have an uncertain result.
+
+Every Wilma request, logins included, fails after 30 seconds instead of waiting forever. Each
+finished homework refresh, message refresh, calendar sync and analysis batch writes one line to the
+server log with its duration and number of Wilma requests, for example
+`message refresh 2.8s (49 Wilma requests)`. These lines carry no names or message text.
 
 ## Privacy and logs
 

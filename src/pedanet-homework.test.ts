@@ -46,9 +46,44 @@ test("Peda.net parser refuses a changed module identity", () => {
   );
 });
 
-test("Peda.net parser validates the weekday", () => {
-  assert.throws(
-    () => parseRecentPedanetHomework(page("ma 15.9.<br>Tehtävä"), MODULE_ID, new Date("2026-09-15T12:00:00Z")),
-    /weekday did not match/,
+test("Peda.net parser moves a mistyped month to the neighbouring month whose weekday fits", () => {
+  // The real page on 1.10.2026 read "to 1.9." above "ke 30.9."; Thursday is 1.10.
+  const result = parseRecentPedanetHomework(page(`
+    to 1.9.<br>Tämän päivän tehtävä<br>
+    ke 30.9.<br>Eilinen tehtävä
+  `), MODULE_ID, new Date("2026-10-01T12:00:00Z"));
+
+  assert.deepEqual(result, [
+    { date: "2026-10-01", heading: "to 1.9.", content: "Tämän päivän tehtävä" },
+    { date: "2026-09-30", heading: "ke 30.9.", content: "Eilinen tehtävä" },
+  ]);
+});
+
+test("Peda.net parser skips only a heading that no month fits and reports it", () => {
+  const skipped: string[] = [];
+  const result = parseRecentPedanetHomework(
+    page("ma 15.9.<br>Väärä päivä<br>ti 15.9.<br>Toinen otsikko samalle päivälle<br>ma 14.9.<br>Tehtävä"),
+    MODULE_ID,
+    new Date("2026-09-15T12:00:00Z"),
+    (error) => skipped.push(error.message),
   );
+
+  assert.deepEqual(result, [
+    { date: "2026-09-15", heading: "ti 15.9.", content: "Toinen otsikko samalle päivälle" },
+    { date: "2026-09-14", heading: "ma 14.9.", content: "Tehtävä" },
+  ]);
+  assert.deepEqual(skipped, ['Peda.net homework heading "ma 15.9." matched no date']);
+});
+
+test("Peda.net parser keeps the first of two headings for one date", () => {
+  const skipped: string[] = [];
+  const result = parseRecentPedanetHomework(
+    page("ti 15.9.<br>Ensimmäinen<br>ti 15.9.<br>Toinen"),
+    MODULE_ID,
+    new Date("2026-09-15T12:00:00Z"),
+    (error) => skipped.push(error.message),
+  );
+
+  assert.deepEqual(result, [{ date: "2026-09-15", heading: "ti 15.9.", content: "Ensimmäinen" }]);
+  assert.deepEqual(skipped, ['Peda.net homework heading "ti 15.9." repeated an earlier date']);
 });

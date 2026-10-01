@@ -23,6 +23,7 @@ export class PedanetHomeworkService {
     private readonly expectedModuleId: string,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly now: () => Date = () => new Date(),
+    private readonly onSkippedHeading?: (error: Error) => void,
   ) {}
 
   async recent(): Promise<PedanetHomework[]> {
@@ -37,12 +38,28 @@ export class PedanetHomeworkService {
     if (!response.ok) throw new Error("Peda.net homework request failed");
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     if (!contentType.includes("text/html")) throw new Error("Peda.net homework response was not HTML");
-    const parsed = parseRecentPedanetHomework(await response.text(), this.expectedModuleId, this.now());
+    const parsed = parseRecentPedanetHomework(
+      await response.text(),
+      this.expectedModuleId,
+      this.now(),
+      this.onSkippedHeading,
+    );
     return parsed.map((block) => ({ ...block, sourceUrl: this.sourceUrl, personalizationStatus: "unresolved" }));
   }
 }
 
-export function parseRecentPedanetHomework(html: string, expectedModuleId: string, now = new Date()): DatedBlock[] {
+/**
+ * One mistyped heading must not hide the whole card. A heading whose weekday
+ * contradicts its date is moved to the neighbouring month that fits, when exactly
+ * one does ("to 1.9." written for Thursday 1.10.); otherwise that day alone is
+ * skipped and reported through `onSkippedHeading`.
+ */
+export function parseRecentPedanetHomework(
+  html: string,
+  expectedModuleId: string,
+  now = new Date(),
+  onSkippedHeading?: (error: Error) => void,
+): DatedBlock[] {
   const $ = load(html);
   const article = $("article.textmodule.document[data-draft-type='published']")
     .filter((_index, element) => $(element).find("h1").first().text().trim().toLocaleUpperCase("fi") === "LÄKSYT")
@@ -72,11 +89,16 @@ export function parseRecentPedanetHomework(html: string, expectedModuleId: strin
     const match = DATE_HEADING.exec(line);
     if (match?.[1] && match[2] && match[3]) {
       if (current) blocks.push(finishBlock(current));
-      const day = Number(match[2]);
-      const month = Number(match[3]);
-      const year = month >= 8 ? startYear : endYear;
-      const date = validDate(year, month, day, match[1].toLowerCase());
-      if (seen.has(date)) throw new Error("Peda.net homework date was duplicated");
+      current = null;
+      const date = headingDate(startYear, endYear, Number(match[3]), Number(match[2]), match[1].toLowerCase());
+      if (!date) {
+        onSkippedHeading?.(new Error(`Peda.net homework heading "${line}" matched no date`));
+        continue;
+      }
+      if (seen.has(date)) {
+        onSkippedHeading?.(new Error(`Peda.net homework heading "${line}" repeated an earlier date`));
+        continue;
+      }
       seen.add(date);
       current = { heading: line, date, lines: [] };
     } else if (current && line) {
@@ -98,12 +120,24 @@ function finishBlock(block: { heading: string; date: string; lines: string[] }):
   return { date: block.date, heading: block.heading, content };
 }
 
-function validDate(year: number, month: number, day: number, weekday: string): string {
+function headingDate(startYear: number, endYear: number, month: number, day: number, weekday: string): string | null {
+  const written = schoolYearDate(startYear, endYear, month, day);
+  if (written && WEEKDAYS[written.getUTCDay()] === weekday) return isoDay(written);
+  const neighbours = [month - 1, month + 1]
+    .map((candidate) => ((candidate + 11) % 12) + 1)
+    .map((candidate) => schoolYearDate(startYear, endYear, candidate, day))
+    .filter((candidate): candidate is Date => candidate !== null && WEEKDAYS[candidate.getUTCDay()] === weekday);
+  return neighbours.length === 1 ? isoDay(neighbours[0]!) : null;
+}
+
+function schoolYearDate(startYear: number, endYear: number, month: number, day: number): Date | null {
+  const year = month >= 8 ? startYear : endYear;
   const value = new Date(Date.UTC(year, month - 1, day));
-  if (value.getUTCFullYear() !== year || value.getUTCMonth() !== month - 1 || value.getUTCDate() !== day) {
-    throw new Error("Peda.net homework date was invalid");
-  }
-  if (WEEKDAYS[value.getUTCDay()] !== weekday) throw new Error("Peda.net homework weekday did not match its date");
+  if (value.getUTCFullYear() !== year || value.getUTCMonth() !== month - 1 || value.getUTCDate() !== day) return null;
+  return value;
+}
+
+function isoDay(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
 

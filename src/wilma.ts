@@ -66,6 +66,17 @@ export interface LessonWindow {
   deleteFrom: string;
 }
 
+/** A saved inbox message, looked up by account, student and Wilma message id. */
+export type KnownMessageLookup = (accountId: string, studentNumber: string, messageId: number) => FetchedMessage | undefined;
+
+export interface FetchAllOptions {
+  sentAfter?: Date;
+  includeLessons?: boolean;
+  /** False reads only exams and timetables, for a calendar sync that already has the messages. */
+  includeMessages?: boolean;
+  known?: KnownMessageLookup;
+}
+
 export interface WilmaBundle {
   messages: FetchedMessage[];
   structuredCalendarItems: SourceCalendarItem[];
@@ -81,6 +92,17 @@ export interface DiaryPageReader {
 export interface DiaryOptions {
   onError?: (error: unknown) => void;
   openSession?: (account: WilmaAccountConfig, studentNumber: string) => Promise<DiaryPageReader>;
+}
+
+/**
+ * The diary pages need the same logged-in, student-prefixed session the client
+ * already holds. The client keeps it in a field its typings mark private, so
+ * this falls back to a separate login if a client version stops exposing it.
+ */
+function clientPageReader(client: WilmaClient): DiaryPageReader | null {
+  const session = (client as unknown as { session?: unknown }).session;
+  if (!(session instanceof WilmaSession)) return null;
+  return { get: async (path) => (await session.get(path)).text() };
 }
 
 async function openWilmaSession(
@@ -117,8 +139,14 @@ export class WilmaService {
     return WilmaClient.listStudents(this.baseProfile(account), this.mfaCallback(account));
   }
 
-  async fetchHomework(): Promise<FetchedHomework[]> {
+  /**
+   * Homework, lesson diary and upcoming exams for every child, read with one
+   * Wilma login per child. Exams carry the same source ids calendar sync writes,
+   * so the homework page can offer one checkbox per exam.
+   */
+  async fetchHomework(): Promise<{ homework: FetchedHomework[]; exams: FetchedExam[] }> {
     const homework: FetchedHomework[] = [];
+    const exams: FetchedExam[] = [];
     for (const account of this.config.wilmaAccounts) {
       const profiles = await this.profilesForAccount(account);
       for (const profile of profiles) {
@@ -131,25 +159,7 @@ export class WilmaService {
           child: profile.child,
           source: "homework" as const,
         })));
-        homework.push(...await this.fetchLessonDiary(account, profile));
-      }
-    }
-    homework.sort((left, right) => right.date.localeCompare(left.date)
-      || left.child.localeCompare(right.child, "fi")
-      || left.subject.localeCompare(right.subject, "fi"));
-    this.clearCompletedFetchState();
-    return homework;
-  }
-
-  /**
-   * Upcoming exams for every child, with the same source ids calendar sync
-   * writes, so the homework page can offer one checkbox per exam.
-   */
-  async fetchExams(): Promise<FetchedExam[]> {
-    const exams: FetchedExam[] = [];
-    for (const account of this.config.wilmaAccounts) {
-      for (const profile of await this.profilesForAccount(account)) {
-        const client = await this.clientForFetch(account, profile);
+        homework.push(...await this.fetchLessonDiary(account, profile, client));
         for (const exam of await client.exams.list()) {
           exams.push({
             sourceId: examSourceId(account.id, profile.studentNumber, exam.wilmaId),
@@ -162,11 +172,14 @@ export class WilmaService {
         }
       }
     }
+    homework.sort((left, right) => right.date.localeCompare(left.date)
+      || left.child.localeCompare(right.child, "fi")
+      || left.subject.localeCompare(right.subject, "fi"));
     exams.sort((left, right) => left.date.localeCompare(right.date)
       || left.child.localeCompare(right.child, "fi")
       || left.subject.localeCompare(right.subject, "fi"));
     this.clearCompletedFetchState();
-    return exams;
+    return { homework, exams };
   }
 
   /**
@@ -178,10 +191,13 @@ export class WilmaService {
   private async fetchLessonDiary(
     account: WilmaAccountConfig,
     profile: ProfileMapping,
+    client: WilmaClient,
   ): Promise<FetchedHomework[]> {
     const notBefore = diaryCutoff(this.now());
     try {
-      const session = await (this.diary.openSession ?? openWilmaSession)(account, profile.studentNumber);
+      const session = this.diary.openSession
+        ? await this.diary.openSession(account, profile.studentNumber)
+        : clientPageReader(client) ?? await openWilmaSession(account, profile.studentNumber);
       const groups = parseDiaryGroups(await session.get("/"));
       const entries: FetchedHomework[] = [];
       for (const group of groups) {
@@ -206,7 +222,7 @@ export class WilmaService {
     }
   }
 
-  async fetchAll(options: { sentAfter?: Date; includeLessons?: boolean } = {}): Promise<WilmaBundle> {
+  async fetchAll(options: FetchAllOptions = {}): Promise<WilmaBundle> {
     try {
       return await this.fetchAllOnce(options);
     } catch (error) {
@@ -215,7 +231,7 @@ export class WilmaService {
     }
   }
 
-  private async fetchAllOnce(options: { sentAfter?: Date; includeLessons?: boolean }): Promise<WilmaBundle> {
+  private async fetchAllOnce(options: FetchAllOptions): Promise<WilmaBundle> {
     const messages: FetchedMessage[] = [];
     const structuredCalendarItems: SourceCalendarItem[] = [];
     const lessonItemsByChild = new Map<string, Map<string, SourceCalendarItem>>();
@@ -226,46 +242,7 @@ export class WilmaService {
       const profiles = await this.profilesForAccount(account);
       for (const profile of profiles) {
         const client = await this.clientForFetch(account, profile);
-        const listed = await client.messages.list("inbox");
-        const selected = options.sentAfter
-          ? listed.filter((summary) => summary.sentAt.getTime() >= options.sentAfter!.getTime())
-          : listed;
-        for (const summary of selected) {
-          const detail = await client.messages.get(summary.wilmaId);
-          messages.push({
-            accountId: account.id,
-            studentNumber: profile.studentNumber,
-            child: profile.child,
-            messageId: detail.wilmaId,
-            subject: detail.subject || summary.subject || "(ei otsikkoa)",
-            sender: detail.senderName?.trim() || "Wilma",
-            sentAt: detail.sentAt,
-            content: detail.content?.trim() || "",
-          });
-        }
-        const listedNotices = await client.news?.list?.() ?? [];
-        const selectedNotices = options.sentAfter
-          ? listedNotices.filter((notice) => notice.published && notice.published.getTime() >= options.sentAfter!.getTime())
-          : listedNotices;
-        for (const summary of selectedNotices) {
-          const detail = await client.news.get(summary.wilmaId);
-          const published = detail.published ?? summary.published;
-          if (!published) continue;
-          const resources = (detail.resources ?? []).map((resource) => `${resource.label}: ${resource.url}`);
-          messages.push({
-            sourceType: "notice",
-            accountId: account.id,
-            studentNumber: profile.studentNumber,
-            child: profile.child,
-            messageId: detail.wilmaId,
-            subject: detail.title?.trim() || summary.title?.trim() || "(ei otsikkoa)",
-            sender: detail.author?.trim() || summary.author?.trim() || "Wilma-tiedote",
-            sentAt: published,
-            content: [detail.subtitle?.trim(), detail.content?.trim(), ...resources]
-              .filter((value): value is string => Boolean(value))
-              .join("\n\n"),
-          });
-        }
+        if (options.includeMessages !== false) await this.fetchMessagesAndNotices(client, account, profile, options, messages);
         const exams = await client.exams.list();
         for (const exam of exams) {
           structuredCalendarItems.push({
@@ -322,6 +299,65 @@ export class WilmaService {
         reconcile: items.size > 0 && lessonReconcileByChild.get(child) === true,
       }));
     return { messages, structuredCalendarItems, lessonCalendars, lessonWindow };
+  }
+
+  /**
+   * Inbox messages and notices of one profile. A Wilma message cannot change
+   * after it is sent, so one already in the saved snapshot (`known`) is reused
+   * instead of opened again. Notices can be edited, so they are always opened.
+   */
+  private async fetchMessagesAndNotices(
+    client: WilmaClient,
+    account: WilmaAccountConfig,
+    profile: ProfileMapping,
+    options: FetchAllOptions,
+    messages: FetchedMessage[],
+  ): Promise<void> {
+    const listed = await client.messages.list("inbox");
+    const selected = options.sentAfter
+      ? listed.filter((summary) => summary.sentAt.getTime() >= options.sentAfter!.getTime())
+      : listed;
+    for (const summary of selected) {
+      const known = options.known?.(account.id, profile.studentNumber, summary.wilmaId);
+      if (known?.content) {
+        messages.push({ ...known, child: profile.child });
+        continue;
+      }
+      const detail = await client.messages.get(summary.wilmaId);
+      messages.push({
+        accountId: account.id,
+        studentNumber: profile.studentNumber,
+        child: profile.child,
+        messageId: detail.wilmaId,
+        subject: detail.subject || summary.subject || "(ei otsikkoa)",
+        sender: detail.senderName?.trim() || "Wilma",
+        sentAt: detail.sentAt,
+        content: detail.content?.trim() || "",
+      });
+    }
+    const listedNotices = await client.news?.list?.() ?? [];
+    const selectedNotices = options.sentAfter
+      ? listedNotices.filter((notice) => notice.published && notice.published.getTime() >= options.sentAfter!.getTime())
+      : listedNotices;
+    for (const summary of selectedNotices) {
+      const detail = await client.news.get(summary.wilmaId);
+      const published = detail.published ?? summary.published;
+      if (!published) continue;
+      const resources = (detail.resources ?? []).map((resource) => `${resource.label}: ${resource.url}`);
+      messages.push({
+        sourceType: "notice",
+        accountId: account.id,
+        studentNumber: profile.studentNumber,
+        child: profile.child,
+        messageId: detail.wilmaId,
+        subject: detail.title?.trim() || summary.title?.trim() || "(ei otsikkoa)",
+        sender: detail.author?.trim() || summary.author?.trim() || "Wilma-tiedote",
+        sentAt: published,
+        content: [detail.subtitle?.trim(), detail.content?.trim(), ...resources]
+          .filter((value): value is string => Boolean(value))
+          .join("\n\n"),
+      });
+    }
   }
 
   private async profilesForAccount(account: WilmaAccountConfig): Promise<ProfileMapping[]> {

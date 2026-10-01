@@ -16,6 +16,10 @@ interface AnalyzeSyncDependencies {
   pending(message: FetchedMessage): boolean;
   statuses(): AnalysisBatchStatus[];
   sync(): Promise<CalendarSyncResult>;
+  /** Resolves when no other job is reading Wilma; the batch itself never touches Wilma. */
+  waitForWilmaTurn?(): Promise<void>;
+  /** Receives one line per finished batch, for the server log. */
+  log?(line: string): void;
   pause?(): Promise<void>;
   mfaAccountId?(error: unknown): string | null;
   reportError?(error: unknown): void;
@@ -65,6 +69,7 @@ export class AnalyzeSyncJob {
   private async run(messages: FetchedMessage[]): Promise<void> {
     try {
       if (messages.length) {
+        const started = Date.now();
         await this.dependencies.submit(messages);
         while (messages.some((message) => this.dependencies.pending(message))) {
           if (this.dependencies.statuses().some((status) => status.status === "submitting")) {
@@ -75,7 +80,9 @@ export class AnalyzeSyncJob {
             await (this.dependencies.pause?.() ?? new Promise((resolve) => setTimeout(resolve, 5_000)));
           }
         }
+        this.dependencies.log?.(`analysis batch ${formatDuration(Date.now() - started)} (${messages.length} messages)`);
       }
+      await this.dependencies.waitForWilmaTurn?.();
       this.status = { ...this.status, state: "syncing" };
       const result = await this.dependencies.sync();
       this.status = { state: "success", result, error: null, mfaAccountId: null, finishedAt: this.now() };
@@ -99,4 +106,11 @@ export class AnalyzeSyncJob {
   private now(): string {
     return (this.dependencies.now?.() ?? new Date()).toISOString();
   }
+}
+
+export function formatDuration(ms: number): string {
+  if (ms < 60_000) return `${(ms / 1_000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1_000);
+  return minutes < 60 ? `${minutes}m${seconds}s` : `${Math.floor(minutes / 60)}h${minutes % 60}m`;
 }

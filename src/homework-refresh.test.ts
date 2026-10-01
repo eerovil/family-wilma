@@ -38,7 +38,7 @@ test("homework refresh serves durable cache while one coalesced refresh runs", a
     let calls = 0;
     const job = new HomeworkRefreshJob({
       cache: store,
-      fetchWilma: async () => { calls += 1; return await pending.promise; },
+      fetchWilma: async () => { calls += 1; return { homework: await pending.promise, exams: [] }; },
       fetchPedanet: async () => [{
         date: "2026-09-15",
         heading: "ti 15.9.",
@@ -101,7 +101,7 @@ test("homework refresh exposes MFA and resumes only after it is claimed", async 
       fetchWilma: async () => {
         calls += 1;
         if (calls === 1) throw mfa;
-        return [item("Fresh")];
+        return { homework: [item("Fresh")], exams: [] };
       },
       mfaAccountId: (error) => error === mfa ? "school" : null,
     });
@@ -128,7 +128,7 @@ test("homework refresh stays queued server-side and refreshes Peda while waiting
     const job = new HomeworkRefreshJob({
       cache: cache(dir),
       waitForWilmaTurn: async () => await turn.promise,
-      fetchWilma: async () => { wilmaCalls += 1; return [item("Fresh")]; },
+      fetchWilma: async () => { wilmaCalls += 1; return { homework: [item("Fresh")], exams: [] }; },
       fetchPedanet: async () => {
         pedanetCalls += 1;
         return [{
@@ -141,6 +141,7 @@ test("homework refresh stays queued server-side and refreshes Peda while waiting
     job.start();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(job.snapshot().state, "running");
+    assert.equal(job.snapshot().waiting, true);
     assert.equal(wilmaCalls, 0);
     assert.equal(pedanetCalls, 1);
     assert.equal(job.snapshot().pedanet[0]?.content, "Peda task");
@@ -148,6 +149,7 @@ test("homework refresh stays queued server-side and refreshes Peda while waiting
     turn.resolve();
     await job.wait();
     assert.equal(wilmaCalls, 1);
+    assert.equal(job.snapshot().waiting, false);
     assert.equal(job.snapshot().state, "success");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -167,7 +169,7 @@ test("automatic homework refresh skips fresh sources and refreshes stale sources
     let pedanetCalls = 0;
     const job = new HomeworkRefreshJob({
       cache: store,
-      fetchWilma: async () => { wilmaCalls += 1; return [item("Fresh")]; },
+      fetchWilma: async () => { wilmaCalls += 1; return { homework: [item("Fresh")], exams: [] }; },
       fetchPedanet: async () => {
         pedanetCalls += 1;
         return [{
@@ -205,7 +207,7 @@ test("automatic homework refresh is a no-op while every configured source is fre
     let calls = 0;
     const job = new HomeworkRefreshJob({
       cache: store,
-      fetchWilma: async () => { calls += 1; return []; },
+      fetchWilma: async () => { calls += 1; return { homework: [], exams: [] }; },
       fetchPedanet: async () => { calls += 1; throw new Error("not called"); },
       now: () => new Date("2026-09-15T12:15:00.000Z"),
     });
