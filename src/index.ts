@@ -21,6 +21,7 @@ import { HomeworkRefreshJob, type HomeworkRefreshSnapshot } from "./homework-ref
 import { MessageCacheStore } from "./message-cache.js";
 import { groupMessages, type GroupedMessage } from "./message-group.js";
 import { messageCalendarProjection, type AnalyzedMessage } from "./message-calendar.js";
+import { pollHead } from "./live-refresh.js";
 import { transientStatus } from "./message-status.js";
 import { THEME_COLOR } from "./pwa-content.js";
 import { pwaAsset } from "./pwa.js";
@@ -131,7 +132,7 @@ function layout(title: string, body: string, head = ""): string {
     <meta name="theme-color" content="${THEME_COLOR}"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">
     <link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <title>${escapeHtml(title)}</title>${head}<style>
-:root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}button:disabled{background:#94a3b8;cursor:wait}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}${MESSAGE_CARD_CSS}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
+:root{font-family:system-ui,-apple-system,sans-serif;color:#18212f;background:#f5f7fb}body{margin:0}.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}h1{margin:16px 0 28px}.actions{display:grid;gap:18px;margin:48px auto;max-width:520px}.button,button{display:block;width:100%;box-sizing:border-box;border:0;border-radius:14px;padding:18px 20px;background:#1d4ed8;color:white;font-size:1.08rem;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}button:disabled{background:#94a3b8;cursor:wait}.secondary{background:#e5e7eb;color:#111827}.card{background:white;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 1px 4px #0002}.important{border-left:6px solid #dc2626}.muted{color:#667085;font-size:.92rem}.pill{display:inline-block;background:#e0e7ff;color:#3730a3;border-radius:99px;padding:3px 8px;margin-right:6px;font-size:.82rem}.error{background:#fee2e2;color:#991b1b;padding:14px;border-radius:12px}.success{background:#dcfce7;color:#166534;padding:14px;border-radius:12px}.analyze-bar{position:sticky;bottom:10px;z-index:2;background:#f5f7fbee;padding:10px 0}.refresh-ready{position:sticky;bottom:calc(10px + env(safe-area-inset-bottom));z-index:3}form.inline{display:flex;gap:8px;align-items:end}label{display:block;font-weight:600}input{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:9px}.select{display:flex;gap:10px;align-items:center}.select input{width:auto}.toplink{color:#1d4ed8;text-decoration:none}${MESSAGE_CARD_CSS}@media(max-width:520px){.wrap{padding:18px 12px}.actions{margin:32px 0}.button,button{padding:17px 14px}}
   </style><style>${HOMEWORK_VIEW_CSS}</style></head><body><main class="wrap">${body}</main><script defer src="/pwa.js"></script></body></html>`;
 }
 
@@ -173,27 +174,27 @@ function homeworkPage(snapshot: HomeworkRefreshSnapshot): string {
     : '<button class="secondary" type="submit">Päivitä nyt</button>';
   return layout(
     "Kotitehtävät",
-    `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1><form method="post" action="/homework/refresh">${refreshButton}</form>${refresh.html}${exams}${content}`,
-    refresh.pollUrl ? `<meta http-equiv="refresh" content="3;url=${escapeHtml(refresh.pollUrl)}">` : "",
+    `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Kotitehtävät</h1><div data-live="status"><form method="post" action="/homework/refresh">${refreshButton}</form>${refresh.html}</div>${exams}${content}<script defer src="/live-refresh.js"></script>`,
+    refresh.polling ? pollHead(3, "/homework") : "",
   );
 }
 
-function homeworkRefreshStatus(snapshot: HomeworkRefreshSnapshot): { html: string; pollUrl: string | null } {
+function homeworkRefreshStatus(snapshot: HomeworkRefreshSnapshot): { html: string; polling: boolean } {
   const saved = homeworkSavedTimes(snapshot);
   if (snapshot.state === "running") {
-    return { html: `<div class="card"><strong>Kotitehtäviä päivitetään…</strong>${saved}<p class="muted">Näytetään tallennetut tiedot. Päivitys jatkuu taustalla.</p></div>`, pollUrl: `/homework?run=${encodeURIComponent(snapshot.runId ?? "pending")}` };
+    return { html: `<div class="card"><strong>Kotitehtäviä päivitetään…</strong>${saved}<p class="muted">Näytetään tallennetut tiedot. Päivitys jatkuu taustalla.</p></div>`, polling: true };
   }
   if (snapshot.state === "error") {
     const errors = [
       snapshot.wilmaError ? staleSourceMessage("Wilma", snapshot.wilmaUpdatedAt) : "",
       snapshot.pedanetError ? staleSourceMessage("Peda.net", snapshot.pedanetUpdatedAt) : "",
     ].filter(Boolean).join("<br>");
-    return { html: `<div class="error">${errors}</div>${saved}`, pollUrl: null };
+    return { html: `<div class="error">${errors}</div>${saved}`, polling: false };
   }
   if (snapshot.state === "success") {
-    return { html: saved, pollUrl: null };
+    return { html: saved, polling: false };
   }
-  return { html: saved, pollUrl: null };
+  return { html: saved, polling: false };
 }
 
 function homeworkSavedTimes(snapshot: HomeworkRefreshSnapshot): string {
@@ -324,8 +325,8 @@ function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): str
   const filters = renderMessageFilters(groupedMessages);
   const cards = messageCards(groupedMessages) || '<p class="muted">Ei viestejä.</p>';
   return layout("Viimeiset 30 päivää", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viimeiset 30 päivää</h1>
-  <form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}${filters}${cards}<script defer src="/message-status.js"></script><script defer src="/message-filters.js"></script>`,
-  active || batchesState.active ? '<meta http-equiv="refresh" content="5">' : "");
+  <div data-live="status"><form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}</div>${filters}${cards}<script defer src="/message-status.js"></script><script defer src="/message-filters.js"></script><script defer src="/live-refresh.js"></script>`,
+  active || batchesState.active ? pollHead(5, "/messages") : "");
 }
 
 function mfaPage(accountId: string, returnTo: string, returnMethod: "GET" | "POST"): string {

@@ -92,6 +92,7 @@ export const PUBLIC_PWA_PATHS = [
   "/pwa.js",
   "/message-filters.js",
   "/message-status.js",
+  "/live-refresh.js",
   "/favicon.svg",
   "/icon-192.png",
   "/icon-512.png",

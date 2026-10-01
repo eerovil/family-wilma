@@ -29,7 +29,9 @@ database. Opening the view renders that snapshot immediately and starts one coal
 refresh only when a source is at least 15 minutes old. **Päivitä nyt** bypasses that freshness
 window. The page updates when the refresh finishes; a failed refresh keeps the last successful
 snapshot visible with its saved timestamp. Changing the configured Wilma household
-or Peda.net source invalidates the corresponding snapshot.
+or Peda.net source invalidates the corresponding snapshot. While this or a message refresh runs, only its status updates in
+place. If you have scrolled down, opened a message or chosen a filter when it finishes, the page
+does not move; a **Uudet tiedot valmiina** bar appears instead and reloads when tapped.
 
 Family Wilma is installable as a PWA. Its service worker uses the network first and stores
 successful application pages on that browser for offline access. OAuth routes and all writes are
