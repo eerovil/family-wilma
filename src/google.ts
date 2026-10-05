@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { calendar as calendarApi, calendar_v3 } from "@googleapis/calendar";
 import { OAuth2Client } from "google-auth-library";
@@ -28,6 +28,32 @@ export interface CalendarSyncResult {
   updated: number;
   unchanged: number;
   deleted: number;
+  /** Items Google refused or that could not be turned into an event; the rest still sync. */
+  skipped: number;
+}
+
+export type CalendarSyncErrorCategory = "google_not_connected" | "google_login_expired" | "google_failed";
+
+/** A failure inside the Google step, labelled so the page can say what went wrong. */
+export class CalendarSyncError extends Error {
+  readonly status?: number;
+  readonly code?: unknown;
+
+  constructor(readonly category: CalendarSyncErrorCategory, cause: Error) {
+    super(cause.message, { cause });
+    this.name = "CalendarSyncError";
+    const status = httpStatus(cause);
+    if (status !== undefined) this.status = status;
+    if (cause && typeof cause === "object" && "code" in cause) this.code = (cause as { code?: unknown }).code;
+  }
+}
+
+const googleStepFailures = new WeakSet<object>();
+
+/** Which part of the Google step failed, or null when the error came from elsewhere. */
+export function calendarSyncErrorCategory(error: unknown): CalendarSyncErrorCategory | null {
+  if (error instanceof CalendarSyncError) return error.category;
+  return error && typeof error === "object" && googleStepFailures.has(error) ? "google_failed" : null;
 }
 
 interface CalendarMap {
@@ -43,6 +69,7 @@ type CalendarEvent = calendar_v3.Schema$Event;
 interface GoogleCalendarDependencies {
   sleep?(milliseconds: number): Promise<void>;
   random?(): number;
+  log?(line: string): void;
 }
 
 export class GoogleCalendarService {
@@ -104,8 +131,25 @@ export class GoogleCalendarService {
   }
 
   async sync(plan: CalendarSyncPlan): Promise<CalendarSyncResult> {
+    try {
+      return await this.syncConnected(plan);
+    } catch (error) {
+      if (error instanceof CalendarSyncError) throw error;
+      if (isInvalidGrant(error)) {
+        // The owner revoked access or the refresh token expired. Forget it so the
+        // page offers "Yhdistä Google Calendar" again instead of failing every sync.
+        rmSync(this.tokenPath, { force: true });
+        throw new CalendarSyncError("google_login_expired", error instanceof Error ? error : new Error("invalid_grant"));
+      }
+      // Rethrown as is, so error reporting still sees the original type and status.
+      if (error && typeof error === "object") googleStepFailures.add(error);
+      throw error;
+    }
+  }
+
+  private async syncConnected(plan: CalendarSyncPlan): Promise<CalendarSyncResult> {
     const token = this.loadToken();
-    if (!token || !this.isConnected()) throw new Error("Google Calendar is not connected");
+    if (!token || !this.isConnected()) throw new CalendarSyncError("google_not_connected", new Error("Google Calendar is not connected"));
     const auth = this.oauth();
     auth.setCredentials(token);
     auth.on("tokens", (tokens) => {
@@ -121,7 +165,7 @@ export class GoogleCalendarService {
       mapping.sharedWith,
     );
     this.saveCalendarMap(mapping);
-    const totals = { created: 0, updated: 0, unchanged: 0, deleted: 0 };
+    const totals = { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 };
     const dropped = new Set(plan.droppedSourceIds ?? []);
     addCounts(totals, await this.syncCalendar(
       calendar,
@@ -148,15 +192,13 @@ export class GoogleCalendarService {
 
   private async ensureCalendars(calendar: CalendarApi, children: string[]): Promise<{ shared: string; lessons: Record<string, string> }> {
     const mapping = this.loadCalendarMap();
-    if (mapping.provisioning) {
-      throw new Error("A previous Google calendar creation has an uncertain result; inspect google-calendar-map.json before retrying");
-    }
+    if (mapping.provisioning) await this.recoverProvisioning(calendar, mapping);
     if (mapping.shared && !await this.calendarExists(calendar, mapping.shared)) {
       mapping.shared = null;
       this.saveCalendarMap(mapping);
     }
     if (!mapping.shared) {
-      mapping.shared = await this.provisionCalendar(calendar, mapping, { kind: "shared" }, "Family Wilma – yhteiset");
+      mapping.shared = await this.provisionCalendar(calendar, mapping, { kind: "shared" }, calendarSummary({ kind: "shared" }));
     }
     for (const child of [...new Set(children)].sort((left, right) => left.localeCompare(right, "fi"))) {
       if (Object.hasOwn(mapping.lessons, child) && await this.calendarExists(calendar, mapping.lessons[child]!)) continue;
@@ -164,9 +206,42 @@ export class GoogleCalendarService {
         delete mapping.lessons[child];
         this.saveCalendarMap(mapping);
       }
-      mapping.lessons[child] = await this.provisionCalendar(calendar, mapping, { kind: "lesson", child }, `${child} – Lukujärjestys`);
+      mapping.lessons[child] = await this.provisionCalendar(calendar, mapping, { kind: "lesson", child }, calendarSummary({ kind: "lesson", child }));
     }
     return { shared: mapping.shared, lessons: mapping.lessons };
+  }
+
+  /**
+   * A creation that timed out may or may not have made the calendar. Adopt an
+   * owned calendar with the exact name if Google lists one; otherwise forget the
+   * attempt so this sync creates it. Leaving the marker stopped every later sync.
+   */
+  private async recoverProvisioning(calendar: CalendarApi, mapping: CalendarMap): Promise<void> {
+    const target = mapping.provisioning!;
+    const summary = calendarSummary(target);
+    const known = new Set([mapping.shared, ...Object.values(mapping.lessons)]);
+    let found: string | undefined;
+    try {
+      let pageToken: string | undefined;
+      do {
+        const response = await this.request(() => calendar.calendarList.list({
+          minAccessRole: "owner",
+          maxResults: 250,
+          ...(pageToken ? { pageToken } : {}),
+        }));
+        found ??= (response.data.items ?? []).find((entry) => entry.id && entry.summary === summary && !known.has(entry.id))?.id ?? undefined;
+        pageToken = response.data.nextPageToken ?? undefined;
+      } while (pageToken && !found);
+    } catch (error) {
+      if (!isDefiniteRejection(error)) throw error;
+    }
+    if (found) {
+      if (target.kind === "shared") mapping.shared = found;
+      else mapping.lessons[target.child] = found;
+    }
+    this.dependencies.log?.(`calendar creation recovered: ${target.kind} ${found ? "adopted" : "will be created again"}`);
+    mapping.provisioning = null;
+    this.saveCalendarMap(mapping);
   }
 
   private async calendarExists(calendar: CalendarApi, calendarId: string): Promise<boolean> {
@@ -269,30 +344,21 @@ export class GoogleCalendarService {
     reconcileWindow?: LessonWindow,
     cleanupSourcePrefixes: string[] = [],
     droppedSourceIds: ReadonlySet<string> = new Set(),
-  ): Promise<{ created: number; updated: number; unchanged: number; deleted: number }> {
+  ): Promise<CalendarSyncResult> {
     const existing = await this.managedEvents(calendar, calendarId, reconcileWindow);
     const bySource = new Map(existing.map((event) => [event.extendedProperties?.private?.familyWilmaSourceId, event]));
     const desiredSources = new Set(items.map((item) => item.sourceId));
     const supersededSourcePrefixes = new Set(cleanupSourcePrefixes);
-    const counts = { created: 0, updated: 0, unchanged: 0, deleted: 0 };
+    const counts = { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 };
     const migratedIds = new Set<string>();
     await forEachConcurrent(items, 1, async (item) => {
-      const desired = this.eventFor(item);
-      const event = bySource.get(item.sourceId) ?? existing.find((candidate) => {
-        const sourceId = candidate.extendedProperties?.private?.familyWilmaSourceId;
-        return candidate.id && !migratedIds.has(candidate.id) && sourceId
-          && (item.supersededSourceIds ?? []).includes(sourceId);
-      });
-      if (!event?.id) {
-        await this.writeRequest(() => calendar.events.insert({ calendarId, requestBody: desired }));
-        counts.created += 1;
-      } else if (event.extendedProperties?.private?.familyWilmaSourceId === item.sourceId && this.sameEvent(event, desired)) {
-        counts.unchanged += 1;
-      } else {
-        const eventId = event.id;
-        await this.writeRequest(() => calendar.events.update({ calendarId, eventId, requestBody: desired }));
-        migratedIds.add(eventId);
-        counts.updated += 1;
+      try {
+        await this.syncItem(calendar, calendarId, item, existing, bySource, migratedIds, counts);
+      } catch (error) {
+        // One malformed item must not stop every other event from reaching Google.
+        if (!isItemRejection(error)) throw error;
+        counts.skipped += 1;
+        this.dependencies.log?.(`calendar item skipped: ${item.sourceId} ${item.date} time=${JSON.stringify(item.time)} (${itemRejectionReason(error)})`);
       }
     });
     const deletedIds = new Set<string>();
@@ -326,6 +392,34 @@ export class GoogleCalendarService {
       });
     }
     return counts;
+  }
+
+  private async syncItem(
+    calendar: CalendarApi,
+    calendarId: string,
+    item: SourceCalendarItem,
+    existing: CalendarEvent[],
+    bySource: Map<string | undefined, CalendarEvent>,
+    migratedIds: Set<string>,
+    counts: CalendarSyncResult,
+  ): Promise<void> {
+    const desired = this.eventFor(item);
+    const event = bySource.get(item.sourceId) ?? existing.find((candidate) => {
+      const sourceId = candidate.extendedProperties?.private?.familyWilmaSourceId;
+      return candidate.id && !migratedIds.has(candidate.id) && sourceId
+        && (item.supersededSourceIds ?? []).includes(sourceId);
+    });
+    if (!event?.id) {
+      await this.writeRequest(() => calendar.events.insert({ calendarId, requestBody: desired }));
+      counts.created += 1;
+    } else if (event.extendedProperties?.private?.familyWilmaSourceId === item.sourceId && this.sameEvent(event, desired)) {
+      counts.unchanged += 1;
+    } else {
+      const eventId = event.id;
+      await this.writeRequest(() => calendar.events.update({ calendarId, eventId, requestBody: desired }));
+      migratedIds.add(eventId);
+      counts.updated += 1;
+    }
   }
 
   private async managedEvents(calendar: CalendarApi, calendarId: string, window?: LessonWindow): Promise<CalendarEvent[]> {
@@ -391,6 +485,8 @@ export class GoogleCalendarService {
   }
 
   private eventFor(item: SourceCalendarItem) {
+    if (item.time && !isClock(item.time)) throw new InvalidCalendarItemError(`time ${JSON.stringify(item.time)}`);
+    if (item.endTime && !isClock(item.endTime)) throw new InvalidCalendarItemError(`end time ${JSON.stringify(item.endTime)}`);
     const start = item.time
       ? { dateTime: `${item.date}T${item.time}:00`, timeZone: HELSINKI_TIME_ZONE }
       : { date: item.date };
@@ -403,7 +499,9 @@ export class GoogleCalendarService {
         timeZone: HELSINKI_TIME_ZONE,
       };
     } else {
-      const exclusiveEnd = new Date(`${item.endDate ?? item.date}T00:00:00Z`);
+      // An end date before the start would make Google reject the event outright.
+      const lastDay = item.endDate && item.endDate > item.date ? item.endDate : item.date;
+      const exclusiveEnd = new Date(`${lastDay}T00:00:00Z`);
       exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1);
       end = { date: exclusiveEnd.toISOString().slice(0, 10) };
     }
@@ -490,6 +588,41 @@ export class UnauthorizedGoogleAccountError extends Error {
   }
 }
 
+class InvalidCalendarItemError extends Error {
+  constructor(detail: string) {
+    super(`Invalid calendar item ${detail}`);
+    this.name = "InvalidCalendarItemError";
+  }
+}
+
+function calendarSummary(target: Exclude<CalendarMap["provisioning"], null>): string {
+  return target.kind === "shared" ? "Family Wilma – yhteiset" : `${target.child} – Lukujärjestys`;
+}
+
+function isClock(value: string): boolean {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+/** Errors that belong to one item: a value we could not use, or Google refusing that event. */
+function isItemRejection(error: unknown): boolean {
+  return error instanceof InvalidCalendarItemError || httpStatus(error) === 400;
+}
+
+function itemRejectionReason(error: unknown): string {
+  if (error instanceof InvalidCalendarItemError) return error.message;
+  const candidate = error as { response?: { data?: { error?: { message?: unknown; errors?: Array<{ reason?: unknown }> } } } };
+  const detail = candidate.response?.data?.error;
+  const reason = typeof detail?.errors?.[0]?.reason === "string" ? detail.errors[0].reason : "";
+  const message = typeof detail?.message === "string" ? detail.message : "";
+  return `HTTP 400${reason ? ` ${reason}` : ""}${message ? `: ${message}` : ""}`;
+}
+
+function isInvalidGrant(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { message?: unknown; response?: { data?: { error?: unknown } } };
+  return candidate.response?.data?.error === "invalid_grant" || candidate.message === "invalid_grant";
+}
+
 function addOneHourToLocalDateTime(date: string, time: string): string {
   const naive = new Date(`${date}T${time}:00Z`);
   if (Number.isNaN(naive.getTime())) throw new Error(`Invalid calendar time: ${date} ${time}`);
@@ -562,14 +695,12 @@ function parseProvisioning(value: unknown): CalendarMap["provisioning"] {
   throw new Error("Invalid provisioning state in Google calendar map");
 }
 
-function addCounts(
-  target: { created: number; updated: number; unchanged: number; deleted: number },
-  source: { created: number; updated: number; unchanged: number; deleted: number },
-): void {
+function addCounts(target: CalendarSyncResult, source: CalendarSyncResult): void {
   target.created += source.created;
   target.updated += source.updated;
   target.unchanged += source.unchanged;
   target.deleted += source.deleted;
+  target.skipped += source.skipped;
 }
 
 async function forEachConcurrent<T>(items: T[], concurrency: number, action: (item: T) => Promise<void>): Promise<void> {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Anthropic from "@anthropic-ai/sdk";
-import { analysisIdentity, MessageAnalyzer } from "./analysis.js";
+import { analysisIdentity, MessageAnalyzer, normaliseTime } from "./analysis.js";
 import { AnalysisStore } from "./store.js";
 
 test("message analysis requests and consumes schema-constrained JSON", async () => {
@@ -76,3 +76,19 @@ test("notice and inbox message ids use separate analysis identities", () => {
     analysisIdentity({ ...message, sourceType: "notice" }),
   );
 });
+
+test("free-text times become HH:MM or an all-day item", () => {
+  assert.deepEqual(normaliseTime("18:00"), { time: "18:00", endTime: null });
+  assert.deepEqual(normaliseTime("18.00"), { time: "18:00", endTime: null });
+  assert.deepEqual(normaliseTime("8:30"), { time: "08:30", endTime: null });
+  assert.deepEqual(normaliseTime("klo 18"), { time: "18:00", endTime: null });
+  assert.deepEqual(normaliseTime("Kello 9.15"), { time: "09:15", endTime: null });
+  assert.deepEqual(normaliseTime("16:45-17:30"), { time: "16:45", endTime: "17:30" });
+  assert.deepEqual(normaliseTime("8:30–12:30"), { time: "08:30", endTime: "12:30" });
+  assert.deepEqual(normaliseTime("12:00-24:00"), { time: "12:00", endTime: null });
+  assert.equal(normaliseTime("aamupäivällä"), null);
+  assert.equal(normaliseTime("Kaksi viimeistä tuntia"), null);
+  assert.equal(normaliseTime("25:00"), null);
+  assert.equal(normaliseTime(null), null);
+});
+

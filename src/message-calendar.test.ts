@@ -30,6 +30,7 @@ test("one merged analysis becomes one shared event labeled for every child", () 
       title: "Einari & Valtteri: Retki",
       date: "2026-09-20",
       time: null,
+      endTime: null,
       endDate: null,
       description: "Wilma-viesti: Retkipäivä",
       supersededSourceIds: ["wilma-message:school:101:7:0", "wilma-message:school:202:19:0"],
@@ -88,3 +89,21 @@ test("notice analysis uses notice-specific calendar source identities", () => {
   assert.equal(projection.items[0]?.description, "Wilma-tiedote: Concert");
   assert.deepEqual(projection.supersededSourcePrefixes, ["wilma-notice:konservatorio:101:7:"]);
 });
+
+test("saved analyses with Finnish or ranged times reach the calendar as HH:MM", () => {
+  const message: FetchedMessage = {
+    accountId: "school", studentNumber: "101", child: "Einari", messageId: 8,
+    subject: "Vanhempainilta", sender: "Opettaja", sentAt: new Date("2026-09-15T06:00:00Z"), content: "Tervetuloa.",
+  };
+  const items = messageCalendarProjection([{
+    message: groupMessages([message])[0]!,
+    calendarItems: [
+      { title: "Ilta", date: "2026-09-20", time: "18.00", endDate: null, description: null },
+      { title: "Retki", date: "2026-09-21", time: "8:30-12:30", endDate: null, description: null },
+      { title: "Tunti", date: "2026-09-22", time: "aamupäivällä", endDate: null, description: null },
+    ],
+    hasOtherContent: false,
+  }]).items.map((item) => [item.time, item.endTime]);
+  assert.deepEqual(items, [["18:00", null], ["08:30", "12:30"], [null, null]]);
+});
+

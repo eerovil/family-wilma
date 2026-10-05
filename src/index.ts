@@ -3,10 +3,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { URL } from "node:url";
 import { loadConfig } from "./config.js";
 import { analysisIdentities, analysisIdentity, MessageAnalyzer } from "./analysis.js";
-import { AnalyzeSyncJob, formatDuration, type AnalyzeSyncSnapshot } from "./analyze-sync.js";
+import { AnalyzeSyncJob, formatDuration, SYNC_ERROR_MESSAGES, type AnalyzeSyncSnapshot } from "./analyze-sync.js";
 import { AnalysisBatchService, type AnalysisBatchAdapter } from "./batch-analysis.js";
 import { ManualAnalysisAdapter } from "./manual-analysis.js";
-import { GoogleCalendarService } from "./google.js";
+import { calendarSyncErrorCategory, GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
 import { MESSAGE_CARD_CSS, renderMessageCard, renderMessageFilters } from "./message-view.js";
@@ -90,7 +90,7 @@ const homeworkRefresh = new HomeworkRefreshJob({
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error, source) => reportError(error, { operation: `homework.${source}.fetch` }),
 });
-const calendar = new GoogleCalendarService(config);
+const calendar = new GoogleCalendarService(config, { log: (line) => console.log(line) });
 const sessions = new SessionStore(config.dataDir);
 const secureCookies = config.baseUrl.startsWith("https://");
 const messageCache = new MessageCacheStore(config.dataDir, wilmaCacheIdentity(config.wilmaAccounts));
@@ -122,6 +122,8 @@ const analyzeSync = new AnalyzeSyncJob({
   },
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error) => reportError(error, { operation: "analysis_and_calendar.sync" }),
+  errorCategory: calendarSyncErrorCategory,
+  saveResult: (sync) => store.saveLastCalendarSync(sync),
 });
 
 const backgroundRefresh = new BackgroundRefresh({
@@ -311,20 +313,21 @@ function analyzeSyncStatus(snapshot: AnalyzeSyncSnapshot): { html: string; refre
       refresh: true,
     };
   }
-  if (snapshot.state === "success" && snapshot.result) {
-    const result = snapshot.result;
-    return {
-      html: transientBanner(`analyze-sync:success:${snapshot.finishedAt ?? "unknown"}`, snapshot.finishedAt, "success", `Synkronointi valmis: luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}.`),
-      refresh: false,
-    };
+  return { html: lastCalendarSyncStatus(), refresh: false };
+}
+
+/** The last finished sync stays on the page until the next one, also after a restart. */
+function lastCalendarSyncStatus(): string {
+  const last = store.lastCalendarSync();
+  if (!last) return "";
+  const when = escapeHtml(formatTimestamp(last.finishedAt));
+  if (last.state === "success" && last.result) {
+    const result = last.result;
+    const skipped = result.skipped ? `, ohitettu ${result.skipped}` : "";
+    return `<p class="muted" data-last-calendar-sync="success">Viimeisin synkronointi ${when}: luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}${skipped}.</p>`;
   }
-  if (snapshot.state === "error") {
-    return {
-      html: transientBanner(`analyze-sync:error:${snapshot.finishedAt ?? "unknown"}`, snapshot.finishedAt, "error", escapeHtml(snapshot.error ?? "Analysointi tai kalenterin synkronointi epäonnistui.")),
-      refresh: false,
-    };
-  }
-  return { html: "", refresh: false };
+  const message = SYNC_ERROR_MESSAGES[last.errorCategory ?? "google_failed"] ?? SYNC_ERROR_MESSAGES.google_failed;
+  return `<div class="error" data-last-calendar-sync="error">Viimeisin synkronointi ${when} epäonnistui. ${escapeHtml(message)}</div>`;
 }
 
 function cachedMessages(messages: GroupedMessage[]): AnalyzedMessage[] {

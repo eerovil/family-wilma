@@ -1,4 +1,5 @@
 import { messageSourcePrefix, type GroupedMessage } from "./message-group.js";
+import { normaliseTime } from "./analysis.js";
 import type { CalendarItem } from "./store.js";
 import type { SourceCalendarItem } from "./wilma.js";
 
@@ -29,15 +30,20 @@ export function messageCalendarProjection(analyzed: AnalyzedMessage[]): MessageC
     const canonicalPrefix = canonicalMessageSourcePrefix(message);
     const messageSupersededPrefixes = message.logicalMessageId ? message.members.map(messageSourcePrefix) : [];
     for (const prefix of messageSupersededPrefixes) supersededSourcePrefixes.add(prefix);
-    return calendarItems.map((item, index) => ({
-      sourceId: `${canonicalPrefix}${index}`,
-      title: `${message.children.join(" & ")}: ${item.title}`,
-      date: item.date,
-      time: item.time,
-      endDate: item.endDate,
-      description: item.description ?? `${message.sourceType === "notice" ? "Wilma-tiedote" : "Wilma-viesti"}: ${message.subject}`,
-      supersededSourceIds: messageSupersededPrefixes.map((prefix) => `${prefix}${index}`),
-    }));
+    return calendarItems.map((item, index) => {
+      // Saved analyses keep the model's own wording, so this also repairs old ones.
+      const clock = normaliseTime(item.time);
+      return {
+        sourceId: `${canonicalPrefix}${index}`,
+        title: `${message.children.join(" & ")}: ${item.title}`,
+        date: item.date,
+        time: clock?.time ?? null,
+        endTime: clock?.endTime ?? null,
+        endDate: item.endDate,
+        description: item.description ?? `${message.sourceType === "notice" ? "Wilma-tiedote" : "Wilma-viesti"}: ${message.subject}`,
+        supersededSourceIds: messageSupersededPrefixes.map((prefix) => `${prefix}${index}`),
+      };
+    });
   });
   return { items, supersededSourcePrefixes: [...supersededSourcePrefixes] };
 }

@@ -209,6 +209,11 @@ one year after their most recent use. Sign out from **Asetukset**.
 After enabling household sharing, reconnect Google Calendar once so Google can grant both the
 managed-calendar and calendar-sharing permissions.
 
+Publish the Google OAuth app (Google Cloud console → **Google Auth Platform → Audience → Publish
+app**). While it is in **Testing**, Google lets the Calendar permission lapse after seven days. When
+Google reports the permission expired (`invalid_grant`), Family Wilma forgets the stored credentials
+and the page asks the owner to **Yhdistä Google Calendar** again.
+
 The first sync creates **Family Wilma – yhteiset** and one **[Child] – Lukujärjestys**
 calendar for every discovered child. Their ids are remembered locally. Family Wilma puts a
 stable source id and `family-wilma-v1` ownership marker in each event's private
@@ -281,10 +286,18 @@ refetch of the same exam. Lessons have no checkbox: they are reconciled against 
 sync, which would overwrite a drop.
 
 Calendar sync runs as an in-process background job. The start request returns immediately, the
-home page refreshes while the job is running, and closing the browser does not cancel it. The
-latest completion counts or a retryable error remain visible on the home page. An application
-restart interrupts an active sync; it is never retried automatically because an interrupted
-Google write can have an uncertain result.
+message view refreshes while the job is running, and closing the browser does not cancel it. The
+last finished run is saved in SQLite and shown on the message view until the next one, also after
+a restart: its counts, or what failed (analysis, Wilma, Google not connected, Google permission
+expired, or Google refusing the sync). An application restart interrupts an active sync; it is
+never retried automatically because an interrupted Google write can have an uncertain result.
+If creating a calendar had an uncertain result, the next sync adopts an owned calendar with the
+same name when Google lists one, and otherwise creates it again.
+
+Message-derived times are cleaned up before they reach Google: `18.00`, `8:30` and `klo 18`
+become `18:00`/`08:30`, a range such as `16:45-17:30` sets the end time, and anything else
+becomes an all-day event. An item Google still refuses (HTTP 400) is skipped, counted as
+`ohitettu` and logged as `calendar item skipped: <source id> …`; the rest of the sync continues.
 
 Every Wilma request, logins included, fails after 30 seconds instead of waiting forever. Each
 finished homework refresh, message refresh, calendar sync and analysis batch writes one line to the
