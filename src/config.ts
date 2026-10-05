@@ -26,6 +26,10 @@ export interface AppConfig {
   pedanetHomeworkUrl: string | null;
   pedanetHomeworkModuleId: string | null;
   wilmaAccounts: WilmaAccountConfig[];
+  /** Hours between automatic refreshes of messages, homework and school mornings; 0 turns them off. */
+  backgroundRefreshHours: number;
+  /** Bearer token for Home Assistant's read-only school-days address; null leaves the address off. */
+  homeAssistantToken: string | null;
 }
 
 function required(name: string): string {
@@ -72,6 +76,13 @@ function parseAccounts(): WilmaAccountConfig[] {
     });
     return { id, baseUrl, username, password, profiles, includeLessons };
   });
+}
+
+function parseBackgroundRefreshHours(): number {
+  const raw = process.env.BACKGROUND_REFRESH_HOURS?.trim() || "3";
+  const hours = Number(raw);
+  if (!Number.isInteger(hours) || hours < 0) throw new Error("BACKGROUND_REFRESH_HOURS must be a whole number of hours, 0 or more");
+  return hours;
 }
 
 export function loadConfig(): AppConfig {
@@ -122,5 +133,7 @@ export function loadConfig(): AppConfig {
     pedanetHomeworkUrl: process.env.PEDANET_HOMEWORK_URL?.trim() || null,
     pedanetHomeworkModuleId: process.env.PEDANET_HOMEWORK_MODULE_ID?.trim() || null,
     wilmaAccounts: parseAccounts(),
+    backgroundRefreshHours: parseBackgroundRefreshHours(),
+    homeAssistantToken: process.env.HOME_ASSISTANT_TOKEN?.trim() || null,
   };
 }

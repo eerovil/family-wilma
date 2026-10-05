@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { PedanetHomework } from "./pedanet-homework.js";
 import type { WilmaAccountConfig } from "./config.js";
+import { isSchoolDayArray, type SchoolDay } from "./school-days.js";
 import type { FetchedExam, FetchedHomework } from "./wilma.js";
 
 export interface CachedValue<T> {
@@ -11,7 +12,7 @@ export interface CachedValue<T> {
   updatedAt: string;
 }
 
-type HomeworkSource = "wilma" | "pedanet" | "exams";
+type HomeworkSource = "wilma" | "pedanet" | "exams" | "schoolDays";
 
 export function homeworkCacheIdentity(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -39,7 +40,7 @@ export class HomeworkCacheStore {
 
   constructor(
     dataDir: string,
-    private readonly identities: { wilma: string; pedanet: string | null; exams: string },
+    private readonly identities: { wilma: string; pedanet: string | null; exams: string; schoolDays?: string },
   ) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     chmodSync(dataDir, 0o700);
@@ -72,6 +73,14 @@ export class HomeworkCacheStore {
 
   putExams(value: FetchedExam[], updatedAt: string): void {
     this.put("exams", value, updatedAt);
+  }
+
+  getSchoolDays(): CachedValue<SchoolDay[]> | null {
+    return this.get("schoolDays", isSchoolDayArray);
+  }
+
+  putSchoolDays(value: SchoolDay[], updatedAt: string): void {
+    this.put("schoolDays", value, updatedAt);
   }
 
   getPedanet(): CachedValue<PedanetHomework[]> | null {

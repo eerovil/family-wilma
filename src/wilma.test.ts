@@ -655,3 +655,87 @@ test("calendar-source fetch reads exams without listing messages or notices", as
     WilmaClient.login = originalLogin;
   }
 });
+
+test("homework fetch reads school mornings for lesson accounts only, and absences only for lesson days", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  const attendanceDates: string[] = [];
+  const scheduleDates: string[] = [];
+  WilmaClient.listStudents = async () => [{ studentNumber: "101", name: "Einari Vilpponen", href: "/profiles/101" }];
+  WilmaClient.login = async (profile) => ({
+    overview: { get: async () => ({ homework: [] }) },
+    exams: { list: async () => [] },
+    schedule: {
+      list: async ({ date }: { date: string }) => {
+        if (profile.baseUrl.includes("conservatory")) throw new Error("403");
+        scheduleDates.push(date);
+        return date === "2026-10-05"
+          ? [
+            { date: "2026-10-05", start: "09:30", end: "10:15" },
+            { date: "2026-10-05", start: "08:30", end: "09:15" },
+            { date: "2026-10-06", start: "09:30", end: "10:15" },
+          ]
+          : [];
+      },
+    },
+    attendance: {
+      list: async ({ date }: { date: string }) => {
+        attendanceDates.push(date);
+        return date === "2026-10-06"
+          ? [{ date, start: "09:00", end: null, subject: "MA", typeLabel: "Poissa -terveydelliset syyt", typeClass: "at-tp190", teacher: "T" }]
+          : [];
+      },
+    },
+  }) as unknown as WilmaClient;
+  const config = {
+    wilmaAccounts: [
+      { id: "school", baseUrl: "https://school.inschool.fi", username: "g", password: "s", profiles: [] },
+      { id: "conservatory", baseUrl: "https://conservatory.inschool.fi", username: "g", password: "s", profiles: [], includeLessons: false },
+    ],
+  } as unknown as AppConfig;
+
+  try {
+    const result = await new WilmaService(config, () => new Date("2026-10-05T03:00:00Z"), {
+      openSession: async () => ({ get: async () => "<html></html>" }),
+    }).fetchHomework();
+    assert.deepEqual(scheduleDates, ["2026-10-05", "2026-10-12"]);
+    assert.deepEqual(attendanceDates, ["2026-10-05", "2026-10-06"]);
+    assert.equal(result.schoolDays?.length, 8);
+    assert.deepEqual(result.schoolDays?.slice(0, 3), [
+      { child: "Einari Vilpponen", date: "2026-10-05", firstLessonStart: "08:30", absent: false },
+      { child: "Einari Vilpponen", date: "2026-10-06", firstLessonStart: "09:30", absent: true },
+      { child: "Einari Vilpponen", date: "2026-10-07", firstLessonStart: null, absent: false },
+    ]);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
+
+test("a timetable read failure returns no school mornings but still returns homework", async () => {
+  const originalListStudents = WilmaClient.listStudents;
+  const originalLogin = WilmaClient.login;
+  const errors: unknown[] = [];
+  WilmaClient.listStudents = async () => [{ studentNumber: "101", name: "Child", href: "/profiles/101" }];
+  WilmaClient.login = async () => ({
+    overview: { get: async () => ({ homework: [{ date: "2026-10-05", subject: "MA", subjectCode: "MA", homework: "Kept", teacher: "T", teacherCode: "T" }] }) },
+    exams: { list: async () => [] },
+    schedule: { list: async () => { throw new Error("schedule down"); } },
+  }) as unknown as WilmaClient;
+  const config = {
+    wilmaAccounts: [{ id: "school", baseUrl: "https://school.inschool.fi", username: "g", password: "s", profiles: [] }],
+  } as unknown as AppConfig;
+
+  try {
+    const result = await new WilmaService(config, () => new Date("2026-10-05T03:00:00Z"), {
+      openSession: async () => ({ get: async () => "<html></html>" }),
+      onSchoolDaysError: (error) => errors.push(error),
+    }).fetchHomework();
+    assert.equal(result.schoolDays, null);
+    assert.equal(result.homework[0]?.homework, "Kept");
+    assert.equal(errors.length, 1);
+  } finally {
+    WilmaClient.listStudents = originalListStudents;
+    WilmaClient.login = originalLogin;
+  }
+});
