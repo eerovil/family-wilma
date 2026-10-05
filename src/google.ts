@@ -605,7 +605,8 @@ function isClock(value: string): boolean {
 
 /** Errors that belong to one item: a value we could not use, or Google refusing that event. */
 function isItemRejection(error: unknown): boolean {
-  return error instanceof InvalidCalendarItemError || httpStatus(error) === 400;
+  // An expired permission is also HTTP 400, but it fails the whole sync, not one item.
+  return error instanceof InvalidCalendarItemError || (httpStatus(error) === 400 && !isInvalidGrant(error));
 }
 
 function itemRejectionReason(error: unknown): string {

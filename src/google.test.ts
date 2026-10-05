@@ -720,6 +720,27 @@ test("an expired Google login disconnects the calendar instead of failing every 
   }
 });
 
+test("a permission that expires mid-sync fails the sync instead of skipping every item", async () => {
+  const { calendar, dataDir } = connectedService({
+    calendars: { insert: async () => ({ data: { id: "shared" } }) },
+    events: {
+      list: async () => ({ data: { items: [] } }),
+      insert: async () => {
+        throw Object.assign(new Error("invalid_grant"), { status: 400, response: { status: 400, data: { error: "invalid_grant" } } });
+      },
+    },
+  });
+  try {
+    await assert.rejects(calendar.sync({
+      ...emptyPlan,
+      sharedItems: [{ sourceId: "a", title: "First", date: "2026-10-06", time: null, endDate: null, description: null }],
+    }), (error) => error instanceof CalendarSyncError && error.category === "google_login_expired");
+    assert.equal(calendar.isConnected(), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("a malformed item is skipped and every other event still reaches Google", async () => {
   const inserted: string[] = [];
   const logged: string[] = [];
