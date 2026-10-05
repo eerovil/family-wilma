@@ -7,7 +7,7 @@ const message = {
   accountId: "school", studentNumber: "1", child: "Child", messageId: 1,
   subject: "Subject", sender: "Teacher", sentAt: new Date("2026-09-15T10:00:00Z"), content: "Body",
 };
-const result: CalendarSyncResult = { created: 1, updated: 2, deleted: 3, unchanged: 4 };
+const result: CalendarSyncResult = { created: 1, updated: 2, deleted: 3, unchanged: 4, skipped: 0 };
 
 test("combined job analyzes every message before calendar sync", async () => {
   const submitted: number[][] = [];
@@ -116,3 +116,57 @@ test("durations read as seconds, minutes or hours", () => {
   assert.equal(formatDuration(38 * 60_000 + 12_000), "38m12s");
   assert.equal(formatDuration(3 * 3_600_000 + 5 * 60_000), "3h5m");
 });
+
+test("every finished run is saved and logged with what went wrong", async () => {
+  const saved: unknown[] = [];
+  const logged: string[] = [];
+  const calendarFailure = new Error("invalid_grant");
+  const failures: Array<Error | null> = [null, calendarFailure, new Error("Wilma down")];
+  const job = new AnalyzeSyncJob({
+    submit: async () => {},
+    refresh: async () => {},
+    pending: () => false,
+    statuses: () => [],
+    sync: async () => {
+      const failure = failures.shift();
+      if (failure) throw failure;
+      return { ...result, skipped: 2 };
+    },
+    errorCategory: (error) => error === calendarFailure ? "google_login_expired" : null,
+    saveResult: (sync) => saved.push(sync),
+    log: (line) => logged.push(line),
+    now: () => new Date("2026-10-05T08:00:00.000Z"),
+  });
+  for (let run = 0; run < 3; run += 1) {
+    job.start([]);
+    await job.wait();
+  }
+  assert.deepEqual(saved, [
+    { finishedAt: "2026-10-05T08:00:00.000Z", state: "success", result: { ...result, skipped: 2 }, errorCategory: null },
+    { finishedAt: "2026-10-05T08:00:00.000Z", state: "error", result: null, errorCategory: "google_login_expired" },
+    { finishedAt: "2026-10-05T08:00:00.000Z", state: "error", result: null, errorCategory: "wilma_failed" },
+  ]);
+  assert.deepEqual(logged, [
+    "calendar sync done: created 1, updated 2, deleted 3, unchanged 4, skipped 2",
+    "calendar sync failed: google_login_expired",
+    "calendar sync failed: wilma_failed",
+  ]);
+  assert.match(job.snapshot().error ?? "", /Wilman tietojen haku epäonnistui/);
+});
+
+test("a failed analysis is saved as an analysis failure", async () => {
+  const saved: Array<{ errorCategory: string | null }> = [];
+  const job = new AnalyzeSyncJob({
+    submit: async () => { throw new Error("Anthropic down"); },
+    refresh: async () => {},
+    pending: () => true,
+    statuses: () => [],
+    sync: async () => result,
+    errorCategory: () => "google_failed",
+    saveResult: (sync) => saved.push(sync),
+  });
+  job.start([message]);
+  await job.wait();
+  assert.deepEqual(saved.map((sync) => sync.errorCategory), ["analysis_failed"]);
+});
+

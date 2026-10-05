@@ -34,6 +34,21 @@ export interface AnalysisBatchStatus {
   updatedAt: string;
 }
 
+export type SyncErrorCategory =
+  | "analysis_failed"
+  | "wilma_failed"
+  | "google_not_connected"
+  | "google_login_expired"
+  | "google_failed";
+
+/** The outcome of the last finished analyse-and-sync run, kept across restarts. */
+export interface LastCalendarSync {
+  finishedAt: string;
+  state: "success" | "error";
+  result: { created: number; updated: number; unchanged: number; deleted: number; skipped: number } | null;
+  errorCategory: SyncErrorCategory | null;
+}
+
 export interface PendingAnalysisBatch {
   batchId: string;
   providerBatchId: string;
@@ -89,6 +104,10 @@ export class AnalysisStore {
         source_id TEXT PRIMARY KEY,
         dropped_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS last_calendar_sync (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        sync_json TEXT NOT NULL
+      );
     `);
     const batchColumns = this.db.prepare("PRAGMA table_info(analysis_batches)").all() as unknown as Array<{ name: string }>;
     if (!batchColumns.some((column) => column.name === "provider_batch_id")) {
@@ -118,6 +137,25 @@ export class AnalysisStore {
     } else {
       this.db.prepare("DELETE FROM dropped_calendar_sources WHERE source_id = ?").run(sourceId);
     }
+  }
+
+  lastCalendarSync(): LastCalendarSync | null {
+    const row = this.db.prepare("SELECT sync_json FROM last_calendar_sync WHERE id = 1").get() as
+      | { sync_json: string }
+      | undefined;
+    if (!row) return null;
+    try {
+      return JSON.parse(row.sync_json) as LastCalendarSync;
+    } catch {
+      return null;
+    }
+  }
+
+  saveLastCalendarSync(sync: LastCalendarSync): void {
+    this.db.prepare(`
+      INSERT INTO last_calendar_sync (id, sync_json) VALUES (1, ?)
+      ON CONFLICT(id) DO UPDATE SET sync_json = excluded.sync_json
+    `).run(JSON.stringify(sync));
   }
 
   key(identity: AnalysisIdentity): { key: string; contentHash: string } {

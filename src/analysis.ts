@@ -66,6 +66,24 @@ function nullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+/**
+ * Turns the free-text time an analysis gives ("18.00", "klo 8:30", "18:00–19:30")
+ * into the HH:MM start (and end) Google needs. Anything else is null, so the
+ * item becomes an all-day event instead of stopping the calendar sync.
+ */
+export function normaliseTime(value: string | null | undefined): { time: string; endTime: string | null } | null {
+  if (!value) return null;
+  const match = /^(?:klo|kello)?\s*(\d{1,2})(?:[.:](\d{2}))?(?:\s*[-–—]\s*(\d{1,2})(?:[.:](\d{2}))?)?$/i
+    .exec(value.trim());
+  if (!match) return null;
+  const clock = (hours: string, minutes = "00") =>
+    Number(hours) < 24 && Number(minutes) < 60 ? `${hours.padStart(2, "0")}:${minutes}` : null;
+  const time = clock(match[1]!, match[2]);
+  if (!time) return null;
+  const endTime = match[3] ? clock(match[3], match[4]) : null;
+  return { time, endTime: endTime && endTime > time ? endTime : null };
+}
+
 export function parseAnalysis(value: unknown): MessageAnalysis {
   if (!value || typeof value !== "object") throw new Error("analysis was not an object");
   const object = value as Record<string, unknown>;

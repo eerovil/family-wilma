@@ -225,6 +225,18 @@ test("health stays public while application pages require Google sign-in", async
     // Nothing left to analyse still offers a sync: that is how a dropped
     // calendar item reaches Google.
     assert.match(await analyzedMessages.text(), /<button type="submit">Synkkaa kalenteri<\/button>/);
+    new AnalysisStore(dataDir).saveLastCalendarSync({
+      finishedAt: "2026-10-05T08:00:00.000Z", state: "error", result: null, errorCategory: "google_login_expired",
+    });
+    const afterFailedSync = await (await fetch(`http://127.0.0.1:${port}/messages`, {
+      headers: { cookie: `family_wilma_session=${token}` },
+    })).text();
+    assert.match(afterFailedSync, /href="\/oauth\/google\/calendar\/start\?returnTo=%2Fmessages">Yhdistä Google Calendar<\/a>/);
+    const setupHtml = await (await fetch(`http://127.0.0.1:${port}/setup`, {
+      headers: { cookie: `family_wilma_session=${token}` },
+    })).text();
+    assert.match(setupHtml, /href="\/oauth\/google\/calendar\/start\?returnTo=%2Fsetup">Yhdistä Google Calendar<\/a>/);
+    assert.match(afterFailedSync, /data-last-calendar-sync="error">Viimeisin synkronointi .* epäonnistui\. Google Calendarin kirjautuminen on vanhentunut/);
     const syncOnly = await fetch(`http://127.0.0.1:${port}/messages/analyze`, {
       method: "POST",
       headers: { cookie: `family_wilma_session=${token}` },

@@ -1,4 +1,4 @@
-import type { AnalysisBatchStatus } from "./store.js";
+import type { AnalysisBatchStatus, LastCalendarSync, SyncErrorCategory } from "./store.js";
 import type { CalendarSyncResult } from "./google.js";
 import type { FetchedMessage } from "./wilma.js";
 
@@ -9,6 +9,14 @@ export interface AnalyzeSyncSnapshot {
   mfaAccountId: string | null;
   finishedAt: string | null;
 }
+
+export const SYNC_ERROR_MESSAGES: Record<SyncErrorCategory, string> = {
+  analysis_failed: "Viestien analysointi epäonnistui. Yritä uudelleen.",
+  wilma_failed: "Wilman tietojen haku epäonnistui. Yritä uudelleen.",
+  google_not_connected: "Google Calendaria ei ole yhdistetty. Kalenterin omistajan pitää yhdistää se.",
+  google_login_expired: "Google Calendarin kirjautuminen on vanhentunut. Kalenterin omistajan pitää yhdistää Google Calendar uudelleen.",
+  google_failed: "Google Calendar hylkäsi synkronoinnin. Yritä uudelleen.",
+};
 
 interface AnalyzeSyncDependencies {
   submit(messages: FetchedMessage[]): Promise<unknown>;
@@ -23,6 +31,10 @@ interface AnalyzeSyncDependencies {
   pause?(): Promise<void>;
   mfaAccountId?(error: unknown): string | null;
   reportError?(error: unknown): void;
+  /** Names a calendar-step failure; anything it does not name is blamed on Wilma. */
+  errorCategory?(error: unknown): SyncErrorCategory | null;
+  /** Keeps the finished outcome, so the page can show it after the banner and after a restart. */
+  saveResult?(sync: LastCalendarSync): void;
   now?(): Date;
 }
 
@@ -67,6 +79,7 @@ export class AnalyzeSyncJob {
   }
 
   private async run(messages: FetchedMessage[]): Promise<void> {
+    let phase: "analysis" | "sync" = "analysis";
     try {
       if (messages.length) {
         const started = Date.now();
@@ -82,10 +95,14 @@ export class AnalyzeSyncJob {
         }
         this.dependencies.log?.(`analysis batch ${formatDuration(Date.now() - started)} (${messages.length} messages)`);
       }
+      phase = "sync";
       await this.dependencies.waitForWilmaTurn?.();
       this.status = { ...this.status, state: "syncing" };
       const result = await this.dependencies.sync();
-      this.status = { state: "success", result, error: null, mfaAccountId: null, finishedAt: this.now() };
+      const finishedAt = this.now();
+      this.status = { state: "success", result, error: null, mfaAccountId: null, finishedAt };
+      this.dependencies.log?.(`calendar sync done: created ${result.created}, updated ${result.updated}, deleted ${result.deleted}, unchanged ${result.unchanged}, skipped ${result.skipped}`);
+      this.dependencies.saveResult?.({ finishedAt, state: "success", result: { ...result }, errorCategory: null });
     } catch (error) {
       const mfaAccountId = this.dependencies.mfaAccountId?.(error) ?? null;
       if (mfaAccountId) {
@@ -93,13 +110,19 @@ export class AnalyzeSyncJob {
         return;
       }
       this.dependencies.reportError?.(error);
+      const category = phase === "analysis"
+        ? "analysis_failed"
+        : this.dependencies.errorCategory?.(error) ?? "wilma_failed";
+      const finishedAt = this.now();
       this.status = {
         state: "error",
         result: null,
-        error: "Analysointi tai kalenterin synkronointi epäonnistui. Yritä uudelleen.",
+        error: SYNC_ERROR_MESSAGES[category],
         mfaAccountId: null,
-        finishedAt: this.now(),
+        finishedAt,
       };
+      this.dependencies.log?.(`calendar sync failed: ${category}`);
+      this.dependencies.saveResult?.({ finishedAt, state: "error", result: null, errorCategory: category });
     }
   }
 

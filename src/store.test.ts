@@ -93,3 +93,18 @@ test("dropped calendar sources are remembered and can be checked back", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the last calendar sync survives reopening the database", () => {
+  const dir = mkdtempSync(join(tmpdir(), "family-wilma-"));
+  try {
+    const first = new AnalysisStore(dir);
+    assert.equal(first.lastCalendarSync(), null);
+    first.saveLastCalendarSync({ finishedAt: "2026-10-05T08:00:00.000Z", state: "error", result: null, errorCategory: "google_login_expired" });
+    const success = { finishedAt: "2026-10-05T09:00:00.000Z", state: "success" as const, result: { created: 1, updated: 0, unchanged: 2, deleted: 0, skipped: 1 }, errorCategory: null };
+    first.saveLastCalendarSync(success);
+    assert.deepEqual(new AnalysisStore(dir).lastCalendarSync(), success);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+

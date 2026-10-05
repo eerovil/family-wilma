@@ -3,10 +3,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { URL } from "node:url";
 import { loadConfig } from "./config.js";
 import { analysisIdentities, analysisIdentity, MessageAnalyzer } from "./analysis.js";
-import { AnalyzeSyncJob, formatDuration, type AnalyzeSyncSnapshot } from "./analyze-sync.js";
+import { AnalyzeSyncJob, formatDuration, SYNC_ERROR_MESSAGES, type AnalyzeSyncSnapshot } from "./analyze-sync.js";
 import { AnalysisBatchService, type AnalysisBatchAdapter } from "./batch-analysis.js";
 import { ManualAnalysisAdapter } from "./manual-analysis.js";
-import { GoogleCalendarService } from "./google.js";
+import { calendarSyncErrorCategory, GoogleCalendarService } from "./google.js";
 import { UnauthorizedGoogleAccountError } from "./google.js";
 import { clearOAuthStateCookie, clearSessionCookie, oauthStateCookie, oauthStateToken, safeReturnPath, sessionCookie, sessionToken, SessionStore } from "./auth.js";
 import { MESSAGE_CARD_CSS, renderMessageCard, renderMessageFilters } from "./message-view.js";
@@ -90,7 +90,7 @@ const homeworkRefresh = new HomeworkRefreshJob({
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error, source) => reportError(error, { operation: `homework.${source}.fetch` }),
 });
-const calendar = new GoogleCalendarService(config);
+const calendar = new GoogleCalendarService(config, { log: (line) => console.log(line) });
 const sessions = new SessionStore(config.dataDir);
 const secureCookies = config.baseUrl.startsWith("https://");
 const messageCache = new MessageCacheStore(config.dataDir, wilmaCacheIdentity(config.wilmaAccounts));
@@ -122,6 +122,8 @@ const analyzeSync = new AnalyzeSyncJob({
   },
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error) => reportError(error, { operation: "analysis_and_calendar.sync" }),
+  errorCategory: calendarSyncErrorCategory,
+  saveResult: (sync) => store.saveLastCalendarSync(sync),
 });
 
 const backgroundRefresh = new BackgroundRefresh({
@@ -311,20 +313,21 @@ function analyzeSyncStatus(snapshot: AnalyzeSyncSnapshot): { html: string; refre
       refresh: true,
     };
   }
-  if (snapshot.state === "success" && snapshot.result) {
-    const result = snapshot.result;
-    return {
-      html: transientBanner(`analyze-sync:success:${snapshot.finishedAt ?? "unknown"}`, snapshot.finishedAt, "success", `Synkronointi valmis: luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}.`),
-      refresh: false,
-    };
+  return { html: lastCalendarSyncStatus(), refresh: false };
+}
+
+/** The last finished sync stays on the page until the next one, also after a restart. */
+function lastCalendarSyncStatus(): string {
+  const last = store.lastCalendarSync();
+  if (!last) return "";
+  const when = escapeHtml(formatTimestamp(last.finishedAt));
+  if (last.state === "success" && last.result) {
+    const result = last.result;
+    const skipped = result.skipped ? `, ohitettu ${result.skipped}` : "";
+    return `<p class="muted" data-last-calendar-sync="success">Viimeisin synkronointi ${when}: luotu ${result.created}, päivitetty ${result.updated}, poistettu ${result.deleted}, ennallaan ${result.unchanged}${skipped}.</p>`;
   }
-  if (snapshot.state === "error") {
-    return {
-      html: transientBanner(`analyze-sync:error:${snapshot.finishedAt ?? "unknown"}`, snapshot.finishedAt, "error", escapeHtml(snapshot.error ?? "Analysointi tai kalenterin synkronointi epäonnistui.")),
-      refresh: false,
-    };
-  }
-  return { html: "", refresh: false };
+  const message = SYNC_ERROR_MESSAGES[last.errorCategory ?? "google_failed"] ?? SYNC_ERROR_MESSAGES.google_failed;
+  return `<div class="error" data-last-calendar-sync="error">Viimeisin synkronointi ${when} epäonnistui. ${escapeHtml(message)}</div>`;
 }
 
 function cachedMessages(messages: GroupedMessage[]): AnalyzedMessage[] {
@@ -334,7 +337,7 @@ function cachedMessages(messages: GroupedMessage[]): AnalyzedMessage[] {
   });
 }
 
-function messageLoadingPage(snapshot: MessageLoadSnapshot): string {
+function messageLoadingPage(snapshot: MessageLoadSnapshot, email: string): string {
   if (snapshot.state === "mfa" && snapshot.mfaAccountId) {
     return mfaPage(snapshot.mfaAccountId, "/messages/refresh", "POST");
   }
@@ -342,7 +345,7 @@ function messageLoadingPage(snapshot: MessageLoadSnapshot): string {
   if (sync.state === "mfa" && sync.mfaAccountId) {
     return mfaPage(sync.mfaAccountId, "/messages/analyze", "POST");
   }
-  return messagesPage(snapshot, sync);
+  return messagesPage(snapshot, sync, email);
 }
 
 function busyPage(message: string): string {
@@ -380,7 +383,7 @@ function batchStatus(): { html: string; active: boolean } {
   return { html, active };
 }
 
-function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): string {
+function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot, email: string): string {
   const batchesState = batchStatus();
   const syncState = analyzeSyncStatus(sync);
   const active = load.state === "fetching" || syncState.refresh;
@@ -406,7 +409,7 @@ function messagesPage(load: MessageLoadSnapshot, sync: AnalyzeSyncSnapshot): str
   const filters = renderMessageFilters(groupedMessages);
   const cards = messageCards(groupedMessages) || '<p class="muted">Ei viestejä.</p>';
   return layout("Viimeiset 30 päivää", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Viimeiset 30 päivää</h1>
-  <div data-live="status"><form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}</div>${filters}${cards}<script defer src="/message-status.js"></script><script defer src="/message-filters.js"></script><script defer src="/live-refresh.js"></script>`,
+  <div data-live="status"><form method="post" action="/messages/refresh">${refreshButton}</form>${loadStatus}${syncState.html}${batchesState.html}${analyzeButton}${calendarReconnect(email, "/messages")}</div>${filters}${cards}<script defer src="/message-status.js"></script><script defer src="/message-filters.js"></script><script defer src="/live-refresh.js"></script>`,
   active || batchesState.active ? pollHead(5, "/messages") : "");
 }
 
@@ -416,14 +419,24 @@ function mfaPage(accountId: string, returnTo: string, returnMethod: "GET" | "POS
 <form method="post" action="/mfa"><input type="hidden" name="accountId" value="${escapeHtml(accountId)}"><input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}"><input type="hidden" name="returnMethod" value="${returnMethod}"><label>Koodi<input name="code" inputmode="numeric" autocomplete="one-time-code" required></label><p><button type="submit">Jatka</button></p></form>`);
 }
 
+/**
+ * Lets the owner sign in to Google Calendar again at any time, for example when
+ * Google has let the permission lapse. Only the owner's sign-in can be used.
+ */
+function calendarReconnect(email: string, returnTo: string): string {
+  if (email !== config.googleAllowedEmail) return "";
+  const label = calendar.isConnected() ? "Kirjaudu Google Calendariin uudelleen" : "Yhdistä Google Calendar";
+  return `<p><a class="button secondary" href="/oauth/google/calendar/start?returnTo=${encodeURIComponent(returnTo)}">${label}</a></p>`;
+}
+
 function setupPage(email: string): string {
   const accounts = config.wilmaAccounts.map((account) => `<div class="card"><strong>${escapeHtml(account.id)}</strong><div class="muted">${escapeHtml(account.baseUrl)} · ${escapeHtml(account.username)}</div><p>Kaikki Wilman profiilit otetaan mukaan automaattisesti.</p>${account.profiles.length ? `<div class="muted">Nimien korvaukset:</div><ul>${account.profiles.map((profile) => `<li>${escapeHtml(profile.studentNumber)} → ${escapeHtml(profile.child)}</li>`).join("")}</ul>` : ""}<a class="toplink" href="/setup/discover?account=${encodeURIComponent(account.id)}">Näytä löydetyt Wilma-profiilit</a></div>`).join("");
   const calendarStatus = calendar.isConnected()
     ? "Google Calendar on yhdistetty."
     : email === config.googleAllowedEmail
-      ? '<a class="toplink" href="/oauth/google/calendar/start?returnTo=%2Fsetup">Yhdistä Google Calendar</a>'
+      ? "Google Calendaria ei ole yhdistetty."
       : "Kalenterin omistajan pitää yhdistää Google Calendar.";
-  return layout("Asetukset", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Asetukset</h1><h2>Wilma-tilit</h2>${accounts || '<p class="error">WILMA_ACCOUNTS_JSON ei sisällä tilejä.</p>'}<h2>Google</h2><p>${calendarStatus}</p><p class="muted">Kirjautunut: ${escapeHtml(email)}</p><form method="post" action="/logout"><button class="secondary" type="submit">Kirjaudu ulos</button></form>`);
+  return layout("Asetukset", `<p><a class="toplink" href="/">← Etusivulle</a></p><h1>Asetukset</h1><h2>Wilma-tilit</h2>${accounts || '<p class="error">WILMA_ACCOUNTS_JSON ei sisällä tilejä.</p>'}<h2>Google</h2><p>${calendarStatus}</p>${calendarReconnect(email, "/setup")}<p class="muted">Kirjautunut: ${escapeHtml(email)}</p><form method="post" action="/logout"><button class="secondary" type="submit">Kirjaudu ulos</button></form>`);
 }
 
 async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
@@ -560,7 +573,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (req.method === "GET" && url.pathname === "/messages") {
       void batches.refresh().catch((error) => reportError(error, { operation: "analysis.batch.refresh" }));
       if (!messageRefreshBlocked(wilmaJobStates())) messageLoad.start({ force: false });
-      return send(res, 200, messageLoadingPage(messageLoad.snapshot()));
+      return send(res, 200, messageLoadingPage(messageLoad.snapshot(), email));
     }
     if (req.method === "POST" && url.pathname === "/messages/analyze") {
       const homework = homeworkRefresh.snapshot();
@@ -569,9 +582,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
       const load = messageLoad.snapshot();
       if (load.state === "fetching" || load.state === "mfa") {
-        return send(res, 409, messageLoadingPage(load));
+        return send(res, 409, messageLoadingPage(load, email));
       }
-      if (!load.messages.length) return send(res, 409, messageLoadingPage(load));
+      if (!load.messages.length) return send(res, 409, messageLoadingPage(load, email));
       const messages = groupMessages(load.messages);
       // Syncing with nothing left to analyse is a real action, not a no-op: it is
       // how an unchecked calendar item reaches Google.

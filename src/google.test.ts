@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { AppConfig } from "./config.js";
-import { GoogleCalendarService, UnauthorizedGoogleAccountError } from "./google.js";
+import { CalendarSyncError, GoogleCalendarService, UnauthorizedGoogleAccountError } from "./google.js";
 import type { SourceCalendarItem } from "./wilma.js";
 
 function service(googleAllowedLoginEmails = ["eero@example.com"]) {
@@ -356,7 +356,7 @@ test("sync creates owned calendars, routes lessons separately, and removes stale
       { calendarId: "calendar-2", summary: "Math" },
     ]);
     assert.deepEqual(deletedEvents, [{ calendarId: "calendar-2", eventId: "stale-lesson" }]);
-    assert.deepEqual(result, { created: 2, updated: 0, unchanged: 0, deleted: 1 });
+    assert.deepEqual(result, { created: 2, updated: 0, unchanged: 0, deleted: 1, skipped: 0 });
 
     const persisted = JSON.parse(readFileSync(join(dataDir, "google-calendar-map.json"), "utf8"));
     assert.equal(persisted.shared, "calendar-1");
@@ -418,7 +418,7 @@ test("shared message sync updates the canonical event and deletes duplicate chil
 
     assert.deepEqual(updated, ["canonical"]);
     assert.deepEqual(deleted, ["duplicate"]);
-    assert.deepEqual(result, { created: 0, updated: 1, unchanged: 0, deleted: 1 });
+    assert.deepEqual(result, { created: 0, updated: 1, unchanged: 0, deleted: 1, skipped: 0 });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -450,7 +450,7 @@ test("shared message cleanup runs even when analysis now has no calendar items",
     }).syncCalendar(fakeApi, "shared", [], undefined, ["wilma-message:school:202:19:"]);
 
     assert.deepEqual(deleted, ["obsolete"]);
-    assert.deepEqual(result, { created: 0, updated: 0, unchanged: 0, deleted: 1 });
+    assert.deepEqual(result, { created: 0, updated: 0, unchanged: 0, deleted: 1, skipped: 0 });
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
@@ -528,7 +528,7 @@ test("calendar writes are paced and retry only explicit rate-limit rejections", 
 
     assert.equal(attempts, 2);
     assert.deepEqual(sleeps, [250, 1_000]);
-    assert.deepEqual(result, { created: 1, updated: 0, unchanged: 0, deleted: 0 });
+    assert.deepEqual(result, { created: 1, updated: 0, unchanged: 0, deleted: 0, skipped: 0 });
 
     let forbiddenAttempts = 0;
     await assert.rejects(
@@ -625,33 +625,155 @@ test("sync recreates confirmed deleted mapped calendars", async () => {
   }
 });
 
-test("an uncertain calendar creation is not retried automatically", async () => {
+function connectedService(api: unknown) {
   const { calendar, dataDir } = service();
-  let attempts = 0;
-  try {
-    writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
-      access_token: "test",
-      family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
-      family_wilma_calendar_owner: "eero@example.com",
-    }));
-    (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
-      setCredentials() {},
-      on() {},
-    });
-    (calendar as unknown as { api: () => unknown }).api = () => ({
-      calendars: {
-        insert: async () => { attempts += 1; throw new Error("connection lost"); },
-      },
-    });
-    const plan = {
-      sharedItems: [], lessonCalendars: [],
-      lessonWindow: { start: "2026-09-14", end: "2027-03-15", deleteFrom: "2026-09-15" },
-    };
+  writeFileSync(join(dataDir, "google-oauth-token.json"), JSON.stringify({
+    access_token: "test",
+    family_wilma_calendar_scope: "calendar.app.created+calendar.acls",
+    family_wilma_calendar_owner: "eero@example.com",
+  }));
+  (calendar as unknown as { oauth: () => { setCredentials(value: unknown): void; on(): void } }).oauth = () => ({
+    setCredentials() {},
+    on() {},
+  });
+  (calendar as unknown as { api: () => unknown }).api = () => api;
+  return { calendar, dataDir };
+}
 
-    await assert.rejects(calendar.sync(plan), /connection lost/);
-    await assert.rejects(calendar.sync(plan), /uncertain result/);
-    assert.equal(attempts, 1);
+const emptyPlan = {
+  sharedItems: [], lessonCalendars: [],
+  lessonWindow: { start: "2026-09-14", end: "2027-03-15", deleteFrom: "2026-09-15" },
+};
+
+test("an uncertain calendar creation adopts the calendar Google did create", async () => {
+  let attempts = 0;
+  let listed = 0;
+  const { calendar, dataDir } = connectedService({
+    calendars: {
+      insert: async () => { attempts += 1; throw new Error("connection lost"); },
+      get: async () => ({ data: {} }),
+    },
+    calendarList: {
+      list: async () => {
+        listed += 1;
+        return { data: { items: [{ id: "other", summary: "Muu" }, { id: "made-anyway", summary: "Family Wilma – yhteiset" }] } };
+      },
+    },
+    events: { list: async () => ({ data: { items: [] } }) },
+  });
+  try {
+    await assert.rejects(calendar.sync(emptyPlan), /connection lost/);
     assert.deepEqual(JSON.parse(readFileSync(join(dataDir, "google-calendar-map.json"), "utf8")).provisioning, { kind: "shared" });
+    assert.deepEqual(await calendar.sync(emptyPlan), { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 });
+    assert.equal(attempts, 1);
+    assert.equal(listed, 1);
+    const map = JSON.parse(readFileSync(join(dataDir, "google-calendar-map.json"), "utf8"));
+    assert.equal(map.shared, "made-anyway");
+    assert.equal(map.provisioning, null);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an uncertain calendar creation is retried when Google lists no such calendar", async () => {
+  let attempts = 0;
+  const { calendar, dataDir } = connectedService({
+    calendars: {
+      insert: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("connection lost");
+        return { data: { id: "created" } };
+      },
+    },
+    calendarList: { list: async () => { throw Object.assign(new Error("insufficient scope"), { status: 403 }); } },
+    events: { list: async () => ({ data: { items: [] } }) },
+  });
+  try {
+    await assert.rejects(calendar.sync(emptyPlan), /connection lost/);
+    await calendar.sync(emptyPlan);
+    assert.equal(attempts, 2);
+    const map = JSON.parse(readFileSync(join(dataDir, "google-calendar-map.json"), "utf8"));
+    assert.equal(map.shared, "created");
+    assert.equal(map.provisioning, null);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an expired Google login disconnects the calendar instead of failing every sync", async () => {
+  const { calendar, dataDir } = connectedService({
+    calendars: {
+      insert: async () => {
+        throw Object.assign(new Error("invalid_grant"), { status: 400, response: { status: 400, data: { error: "invalid_grant" } } });
+      },
+    },
+  });
+  try {
+    assert.equal(calendar.isConnected(), true);
+    await assert.rejects(calendar.sync(emptyPlan), (error) =>
+      error instanceof CalendarSyncError && error.category === "google_login_expired");
+    assert.equal(calendar.isConnected(), false);
+    await assert.rejects(calendar.sync(emptyPlan), (error) =>
+      error instanceof CalendarSyncError && error.category === "google_not_connected");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a permission that expires mid-sync fails the sync instead of skipping every item", async () => {
+  const { calendar, dataDir } = connectedService({
+    calendars: { insert: async () => ({ data: { id: "shared" } }) },
+    events: {
+      list: async () => ({ data: { items: [] } }),
+      insert: async () => {
+        throw Object.assign(new Error("invalid_grant"), { status: 400, response: { status: 400, data: { error: "invalid_grant" } } });
+      },
+    },
+  });
+  try {
+    await assert.rejects(calendar.sync({
+      ...emptyPlan,
+      sharedItems: [{ sourceId: "a", title: "First", date: "2026-10-06", time: null, endDate: null, description: null }],
+    }), (error) => error instanceof CalendarSyncError && error.category === "google_login_expired");
+    assert.equal(calendar.isConnected(), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a malformed item is skipped and every other event still reaches Google", async () => {
+  const inserted: string[] = [];
+  const logged: string[] = [];
+  const { calendar, dataDir } = connectedService({
+    calendars: { insert: async () => ({ data: { id: "shared" } }) },
+    events: {
+      list: async () => ({ data: { items: [] } }),
+      insert: async ({ requestBody }: { requestBody: { summary: string } }) => {
+        if (requestBody.summary === "Google refuses") {
+          throw Object.assign(new Error("Bad Request"), {
+            status: 400,
+            response: { status: 400, data: { error: { message: "Invalid start time.", errors: [{ reason: "invalid" }] } } },
+          });
+        }
+        inserted.push(requestBody.summary);
+        return { data: {} };
+      },
+    },
+  });
+  (calendar as unknown as { dependencies: { log(line: string): void } }).dependencies.log = (line) => logged.push(line);
+  const item = (sourceId: string, title: string, time: string | null): SourceCalendarItem => ({
+    sourceId, title, date: "2026-10-06", time, endDate: null, description: null,
+  });
+  try {
+    const result = await calendar.sync({
+      sharedItems: [item("a", "First", "18:00"), item("b", "Bad time", "18.00"), item("c", "Google refuses", null), item("d", "Last", null)],
+      lessonCalendars: [{ child: "Child", reconcile: false, items: [item("lesson", "Lesson", "08:15")] }],
+      lessonWindow: { start: "2026-09-14", end: "2027-03-15", deleteFrom: "2026-09-15" },
+    });
+    assert.deepEqual(inserted, ["First", "Last", "Lesson"]);
+    assert.deepEqual(result, { created: 3, updated: 0, unchanged: 0, deleted: 0, skipped: 2 });
+    assert.equal(logged.filter((line) => line.startsWith("calendar item skipped:")).length, 2);
+    assert.ok(logged.some((line) => line.includes("Invalid start time.")));
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

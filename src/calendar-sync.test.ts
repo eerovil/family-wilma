@@ -9,7 +9,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
-const result: CalendarSyncResult = { created: 1, updated: 2, deleted: 3, unchanged: 4 };
+const result: CalendarSyncResult = { created: 1, updated: 2, deleted: 3, unchanged: 4, skipped: 0 };
 
 test("calendar sync starts in the background and coalesces duplicate starts", async () => {
   const pending = deferred<CalendarSyncResult>();
