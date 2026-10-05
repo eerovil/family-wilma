@@ -33,6 +33,9 @@ database file. Anything that would make it bigger needs a concrete reason first.
 fetching from Wilma, calling Sonnet, and writing to Google Calendar. Message loading, homework
 refresh, and analyze-then-calendar-sync are coalesced in-process background jobs so browser requests return
 promptly. Their active state is intentionally not durable; only data that must survive restart is.
+An in-process timer also runs the message and homework refreshes every `BACKGROUND_REFRESH_HOURS`,
+one after another. It never analyses or syncs the calendar, because those cost money or write to
+Google.
 
 **Self-hosted via Docker Compose.** One service, one mounted volume for the SQLite file. The
 target is a VPS or a home server, not a managed platform.

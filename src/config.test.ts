@@ -35,6 +35,8 @@ test("Wilma accounts do not require manual profile mappings", () => {
     assert.equal(config.wilmaAccounts[0]?.includeLessons, true);
     assert.equal(config.wilmaAccounts[1]?.includeLessons, false);
     assert.deepEqual(config.googleAllowedLoginEmails, ["owner@example.com"]);
+    assert.equal(config.backgroundRefreshHours, 3);
+    assert.equal(config.homeAssistantToken, null);
   } finally {
     process.env = previous;
   }
@@ -96,6 +98,31 @@ test("manual analysis mode refuses a non-loopback server", () => {
     });
 
     assert.throws(loadConfig, /requires loopback/);
+  } finally {
+    process.env = previous;
+  }
+});
+
+test("background refresh hours accept 0 and reject anything but whole hours", () => {
+  const previous = { ...process.env };
+  try {
+    Object.assign(process.env, {
+      ANTHROPIC_API_KEY: "test",
+      GOOGLE_CLIENT_ID: "test-client",
+      GOOGLE_CLIENT_SECRET: "test-secret",
+      GOOGLE_ALLOWED_EMAIL: "owner@example.com",
+      WILMA_ACCOUNTS_JSON: "[]",
+      HOME_ASSISTANT_TOKEN: " ha-token ",
+      BACKGROUND_REFRESH_HOURS: "0",
+    });
+    delete process.env.GOOGLE_ALLOWED_LOGIN_EMAILS;
+    const config = loadConfig();
+    assert.equal(config.backgroundRefreshHours, 0);
+    assert.equal(config.homeAssistantToken, "ha-token");
+    for (const bad of ["1.5", "-1", "often"]) {
+      process.env.BACKGROUND_REFRESH_HOURS = bad;
+      assert.throws(() => loadConfig(), /BACKGROUND_REFRESH_HOURS/);
+    }
   } finally {
     process.env = previous;
   }

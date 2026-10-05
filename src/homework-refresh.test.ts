@@ -219,3 +219,35 @@ test("automatic homework refresh is a no-op while every configured source is fre
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("school mornings are saved with homework, and an unreadable timetable keeps the last good one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "family-wilma-school-days-"));
+  try {
+    const identities = {
+      wilma: homeworkCacheIdentity(["household"]),
+      pedanet: null,
+      exams: homeworkCacheIdentity(["exams"]),
+      schoolDays: homeworkCacheIdentity(["household"]),
+    };
+    const day = { child: "Einari", date: "2026-10-05", firstLessonStart: "08:30", absent: false };
+    let schoolDays: typeof day[] | null = [day];
+    const job = new HomeworkRefreshJob({
+      cache: new HomeworkCacheStore(dir, identities),
+      fetchWilma: async () => ({ homework: [], exams: [], schoolDays }),
+      now: () => new Date("2026-10-05T03:00:00.000Z"),
+    });
+
+    job.start();
+    await job.wait();
+    assert.deepEqual(job.snapshot().schoolDays, [day]);
+    assert.deepEqual(new HomeworkCacheStore(dir, identities).getSchoolDays()?.value, [day]);
+
+    schoolDays = null;
+    job.start();
+    await job.wait();
+    assert.deepEqual(job.snapshot().schoolDays, [day]);
+    assert.equal(job.snapshot().schoolDaysUpdatedAt, "2026-10-05T03:00:00.000Z");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

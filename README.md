@@ -35,6 +35,27 @@ or Peda.net source invalidates the corresponding snapshot. While this or a messa
 place. If you have scrolled down, opened a message or chosen a filter when it finishes, the page
 does not move; a **Uudet tiedot valmiina** bar appears instead and reloads when tapped.
 
+Messages and homework are also refreshed automatically every `BACKGROUND_REFRESH_HOURS` (3 by
+default; `0` turns this off), and once at startup when the saved data is older than that. The
+jobs run one after another, so Wilma never sees two logins at once. The automatic refresh never
+starts AI analysis or calendar sync; those stay behind their buttons. If Wilma asks for a login
+code, that refresh is skipped, the old data stays, and the code prompt appears the next time the
+page is opened.
+
+The homework refresh also saves each child's coming school mornings: for today and the next seven
+days, the first lesson's start time and whether Wilma marks the child absent for it. Only accounts
+with lessons enabled are read. Home Assistant reads these from
+`GET /api/home-assistant/school-days` with `Authorization: Bearer <HOME_ASSISTANT_TOKEN>` to time
+a wake-up light. The reply holds nothing else:
+
+```json
+{ "fetchedAt": "2026-10-05T03:00:00.000Z",
+  "children": { "Einari": [{ "date": "2026-10-05", "firstLessonStart": "08:30", "absent": false }] } }
+```
+
+The address does not exist while `HOME_ASSISTANT_TOKEN` is empty. An absence counts when its mark
+falls in or before the first lesson's hour; Wilma only shows absences that have been reported to it.
+
 Family Wilma is installable as a PWA. Its service worker uses the network first and stores
 successful application pages on that browser for offline access. OAuth routes and all writes are
 never cached. Because cached pages can contain family data, install it only on a trusted device

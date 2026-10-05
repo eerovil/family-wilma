@@ -70,6 +70,8 @@ test("health stays public while application pages require Google sign-in", async
       GOOGLE_ALLOWED_EMAIL: "owner@example.com",
       GOOGLE_ALLOWED_LOGIN_EMAILS: "owner@example.com,member@example.com",
       WILMA_ACCOUNTS_JSON: "[]",
+      // The startup refresh would replace the seeded snapshot this test reads.
+      BACKGROUND_REFRESH_HOURS: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -93,6 +95,10 @@ test("health stays public while application pages require Google sign-in", async
     assert.match(manifestResponse.headers.get("content-type") ?? "", /application\/manifest\+json/);
     assert.equal(manifestResponse.headers.get("cache-control"), "no-cache");
     assert.equal((await manifestResponse.json() as { name: string }).name, "Family Wilma");
+
+    // Without HOME_ASSISTANT_TOKEN the Home Assistant address does not exist, and never redirects to Google.
+    const homeAssistant = await fetch(`http://127.0.0.1:${port}/api/home-assistant/school-days`, { redirect: "manual" });
+    assert.equal(homeAssistant.status, 404);
 
     const workerResponse = await fetch(`http://127.0.0.1:${port}/sw.js`);
     assert.equal(workerResponse.status, 200);

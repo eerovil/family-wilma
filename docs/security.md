@@ -70,6 +70,13 @@ Calendar credential. Other household members can start the same server-side sync
 read-only access to the managed calendars, but their Google tokens are never persisted. The
 public health endpoint contains no household data.
 
+One address bypasses Google sign-in: `GET /api/home-assistant/school-days`, for Home Assistant's
+wake-up light. It requires `Authorization: Bearer` with `HOME_ASSISTANT_TOKEN`, compared in
+constant time, and does not exist while that setting is empty. It returns only each child's name,
+the dates from today to a week ahead, the first lesson's start time and an absent flag: no
+subjects, teachers, messages or homework. Anyone holding the token can read that, so use a long
+random value and keep it only in the server's `.env` and Home Assistant's secrets.
+
 Sessions are random opaque values stored only as SHA-256 hashes in SQLite. They expire one year
 after their most recent use and can be revoked by signing out. In production, cookies are
 host-only, Secure, HTTP-only and SameSite restricted. Google OAuth attempts are bound to the

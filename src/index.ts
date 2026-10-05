@@ -27,6 +27,8 @@ import { calendarSyncMustWait, homeworkMustWait, messageRefreshBlocked, type Wil
 import { transientStatus } from "./message-status.js";
 import { THEME_COLOR } from "./pwa-content.js";
 import { pwaAsset } from "./pwa.js";
+import { BackgroundRefresh } from "./background-refresh.js";
+import { HOME_ASSISTANT_SCHOOL_DAYS_PATH, homeAssistantSchoolDays } from "./home-assistant.js";
 
 initializeErrorReporting({
   dsn: process.env.SENTRY_DSN,
@@ -48,6 +50,7 @@ installWilmaRequestLimits();
 configureErrorReportingSecrets([
   config.anthropicApiKey,
   config.googleClientSecret,
+  config.homeAssistantToken,
   ...config.wilmaAccounts.flatMap((account) => [account.username, account.password]),
 ].filter((value): value is string => Boolean(value)));
 const store = new AnalysisStore(config.dataDir);
@@ -60,6 +63,7 @@ const batches: AnalysisBatchAdapter = config.analysisMode === "manual"
   : new AnalysisBatchService(store, analyzer, anthropic!);
 const wilma = new WilmaService(config, () => new Date(), {
   onError: (error) => reportError(error, { operation: "homework.diary.fetch" }),
+  onSchoolDaysError: (error) => reportError(error, { operation: "homework.school_days.fetch" }),
 });
 const pedanetHomework = config.pedanetHomeworkUrl && config.pedanetHomeworkModuleId
   ? new PedanetHomeworkService(
@@ -76,6 +80,7 @@ const homeworkCache = new HomeworkCacheStore(config.dataDir, {
     ? homeworkCacheIdentity([config.pedanetHomeworkUrl, config.pedanetHomeworkModuleId, "recent-seven-days-v1"])
     : null,
   exams: wilmaCacheIdentity(config.wilmaAccounts),
+  schoolDays: wilmaCacheIdentity(config.wilmaAccounts),
 });
 const homeworkRefresh = new HomeworkRefreshJob({
   cache: homeworkCache,
@@ -117,6 +122,37 @@ const analyzeSync = new AnalyzeSyncJob({
   },
   mfaAccountId: (error) => error instanceof MfaCodeRequiredError ? error.accountId : null,
   reportError: (error) => reportError(error, { operation: "analysis_and_calendar.sync" }),
+});
+
+const backgroundRefresh = new BackgroundRefresh({
+  intervalHours: config.backgroundRefreshHours,
+  steps: [
+    {
+      name: "messages",
+      run: async () => {
+        if (messageLoad.snapshot().state === "mfa") return "mfa";
+        await waitWhile(() => messageRefreshBlocked(wilmaJobStates()));
+        messageLoad.start({ force: true });
+        await messageLoad.wait();
+        return messageLoad.snapshot().state === "mfa" ? "mfa" : "done";
+      },
+    },
+    {
+      name: "homework",
+      run: async () => {
+        if (homeworkRefresh.snapshot().state === "mfa") return "mfa";
+        homeworkRefresh.start({ force: true });
+        await homeworkRefresh.wait();
+        return homeworkRefresh.snapshot().state === "mfa" ? "mfa" : "done";
+      },
+    },
+  ],
+  oldestUpdatedAt: () => {
+    const times = [messageLoad.snapshot().updatedAt, homeworkRefresh.snapshot().wilmaUpdatedAt];
+    return times.some((time) => !time) ? null : times.sort()[0]!;
+  },
+  reportError: (error, step) => reportError(error, { operation: `background_refresh.${step}` }),
+  log: (line) => console.log(line),
 });
 
 function wilmaJobStates(): WilmaJobStates {
@@ -422,6 +458,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify({ ok: true }));
       return;
     }
+    if (req.method === "GET" && url.pathname === HOME_ASSISTANT_SCHOOL_DAYS_PATH) {
+      const homework = homeworkRefresh.snapshot();
+      const reply = homeAssistantSchoolDays(
+        config.homeAssistantToken,
+        req.headers.authorization,
+        { schoolDays: homework.schoolDays, updatedAt: homework.schoolDaysUpdatedAt },
+        new Date(),
+      );
+      res.writeHead(reply.status, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify(reply.body));
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/oauth/google/start") {
       const state = sessions.createOAuthState(url.searchParams.get("returnTo"), "login");
       res.setHeader("set-cookie", oauthStateCookie(state, secureCookies));
@@ -600,7 +648,7 @@ function knownRoute(pathname: string): string {
     "/", "/healthz", "/oauth/google/start", "/oauth/google/calendar/start", "/oauth/google/callback", "/setup",
     "/logout", "/homework", "/homework/refresh", "/messages", "/messages/refresh", "/messages/analyze", "/mfa",
     "/calendar/drop",
-    "/setup/discover",
+    "/setup/discover", HOME_ASSISTANT_SCHOOL_DAYS_PATH,
   ]).has(pathname) ? pathname : "unknown";
 }
 
@@ -614,4 +662,5 @@ const server = createServer((req, res) => { void handle(req, res); });
 server.on("error", (error) => reportFatal(error, "server.listen"));
 server.listen(config.port, config.host, () => {
   console.log(`family-wilma listening on port ${config.port}`);
+  backgroundRefresh.start();
 });

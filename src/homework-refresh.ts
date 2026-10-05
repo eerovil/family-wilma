@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { cacheIsFresh } from "./cache-freshness.js";
 import type { HomeworkCacheStore } from "./homework-cache.js";
 import type { PedanetHomework } from "./pedanet-homework.js";
+import type { SchoolDay } from "./school-days.js";
 import type { FetchedExam, FetchedHomework } from "./wilma.js";
 
 export interface HomeworkRefreshSnapshot {
@@ -11,6 +12,8 @@ export interface HomeworkRefreshSnapshot {
   runId: string | null;
   homework: FetchedHomework[];
   exams: FetchedExam[];
+  schoolDays: SchoolDay[];
+  schoolDaysUpdatedAt: string | null;
   wilmaUpdatedAt: string | null;
   wilmaError: boolean;
   pedanet: PedanetHomework[];
@@ -22,7 +25,7 @@ export interface HomeworkRefreshSnapshot {
 interface HomeworkRefreshDependencies {
   cache: HomeworkCacheStore;
   waitForWilmaTurn?: () => Promise<void>;
-  fetchWilma(): Promise<{ homework: FetchedHomework[]; exams: FetchedExam[] }>;
+  fetchWilma(): Promise<{ homework: FetchedHomework[]; exams: FetchedExam[]; schoolDays?: SchoolDay[] | null }>;
   fetchPedanet?: () => Promise<PedanetHomework[]>;
   mfaAccountId?(error: unknown): string | null;
   reportError?(error: unknown, source: "wilma" | "pedanet"): void;
@@ -36,12 +39,15 @@ export class HomeworkRefreshJob {
   constructor(private readonly dependencies: HomeworkRefreshDependencies) {
     const wilma = dependencies.cache.getWilma();
     const pedanet = dependencies.cache.getPedanet();
+    const schoolDays = dependencies.cache.getSchoolDays();
     this.status = {
       state: "idle",
       waiting: false,
       runId: null,
       homework: wilma?.value ?? [],
       exams: dependencies.cache.getExams()?.value ?? [],
+      schoolDays: schoolDays?.value ?? [],
+      schoolDaysUpdatedAt: schoolDays?.updatedAt ?? null,
       wilmaUpdatedAt: wilma?.updatedAt ?? null,
       wilmaError: false,
       pedanet: pedanet?.value ?? [],
@@ -84,6 +90,7 @@ export class HomeworkRefreshJob {
       ...this.status,
       homework: [...this.status.homework],
       exams: [...this.status.exams],
+      schoolDays: [...this.status.schoolDays],
       pedanet: [...this.status.pedanet],
     };
   }
@@ -119,11 +126,16 @@ export class HomeworkRefreshJob {
           this.status = { ...this.status, waiting: false };
         }
       }
-      const { homework, exams } = await this.dependencies.fetchWilma();
+      const { homework, exams, schoolDays } = await this.dependencies.fetchWilma();
       const updatedAt = this.updatedAt();
       this.dependencies.cache.putWilma(homework, updatedAt);
       this.dependencies.cache.putExams(exams, updatedAt);
       this.status = { ...this.status, homework, exams, wilmaUpdatedAt: updatedAt };
+      // A timetable that could not be read keeps the last good one.
+      if (schoolDays) {
+        this.dependencies.cache.putSchoolDays(schoolDays, updatedAt);
+        this.status = { ...this.status, schoolDays, schoolDaysUpdatedAt: updatedAt };
+      }
     } catch (error) {
       const mfaAccountId = this.dependencies.mfaAccountId?.(error) ?? null;
       if (mfaAccountId) {

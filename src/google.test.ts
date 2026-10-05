@@ -23,6 +23,8 @@ function service(googleAllowedLoginEmails = ["eero@example.com"]) {
     googleAllowedEmail: "eero@example.com",
     googleAllowedLoginEmails,
     wilmaAccounts: [],
+    backgroundRefreshHours: 0,
+    homeAssistantToken: null,
   };
   return {
     calendar: new GoogleCalendarService(config, { sleep: async () => {}, random: () => 0 }),
@@ -470,6 +472,8 @@ test("calendar writes are paced and retry only explicit rate-limit rejections", 
     googleAllowedEmail: "eero@example.com",
     googleAllowedLoginEmails: ["eero@example.com"],
     wilmaAccounts: [],
+    backgroundRefreshHours: 0,
+    homeAssistantToken: null,
   };
   const sleeps: number[] = [];
   const calendar = new GoogleCalendarService(config, {

@@ -1,6 +1,7 @@
 import { WilmaClient, WilmaSession, type HomeworkItem, type StudentInfo, type WilmaProfile } from "@wilm-ai/wilma-client";
 import type { AppConfig, ProfileMapping, WilmaAccountConfig } from "./config.js";
 import { diaryCutoff, parseDiaryGroups, parseGroupDiary } from "./wilma-diary.js";
+import { firstLessonStarts, isMorningAbsence, mergeSchoolDays, schoolDayWindow, type SchoolDay } from "./school-days.js";
 
 export class MfaCodeRequiredError extends Error {
   constructor(readonly accountId: string) {
@@ -91,6 +92,8 @@ export interface DiaryPageReader {
 
 export interface DiaryOptions {
   onError?: (error: unknown) => void;
+  /** Called when the timetable or absences cannot be read; homework is still returned. */
+  onSchoolDaysError?: (error: unknown) => void;
   openSession?: (account: WilmaAccountConfig, studentNumber: string) => Promise<DiaryPageReader>;
 }
 
@@ -140,13 +143,16 @@ export class WilmaService {
   }
 
   /**
-   * Homework, lesson diary and upcoming exams for every child, read with one
-   * Wilma login per child. Exams carry the same source ids calendar sync writes,
-   * so the homework page can offer one checkbox per exam.
+   * Homework, lesson diary, upcoming exams and the coming school mornings for
+   * every child, read with one Wilma login per child. Exams carry the same
+   * source ids calendar sync writes, so the homework page can offer one
+   * checkbox per exam. `schoolDays` is null when any child's timetable or
+   * absences could not be read, so a partial list never replaces a whole one.
    */
-  async fetchHomework(): Promise<{ homework: FetchedHomework[]; exams: FetchedExam[] }> {
+  async fetchHomework(): Promise<{ homework: FetchedHomework[]; exams: FetchedExam[]; schoolDays: SchoolDay[] | null }> {
     const homework: FetchedHomework[] = [];
     const exams: FetchedExam[] = [];
+    let schoolDays: SchoolDay[] | null = [];
     for (const account of this.config.wilmaAccounts) {
       const profiles = await this.profilesForAccount(account);
       for (const profile of profiles) {
@@ -170,6 +176,10 @@ export class WilmaService {
             teacher: exam.teacher?.trim() ?? "",
           });
         }
+        if (schoolDays && account.includeLessons !== false) {
+          const days = await this.fetchSchoolDays(profile, client);
+          schoolDays = days ? [...schoolDays, ...days] : null;
+        }
       }
     }
     homework.sort((left, right) => right.date.localeCompare(left.date)
@@ -179,7 +189,34 @@ export class WilmaService {
       || left.child.localeCompare(right.child, "fi")
       || left.subject.localeCompare(right.subject, "fi"));
     this.clearCompletedFetchState();
-    return { homework, exams };
+    return { homework, exams, schoolDays: schoolDays ? mergeSchoolDays(schoolDays) : null };
+  }
+
+  /**
+   * Today and the next seven days for one student: the first lesson's start and
+   * whether Wilma marks the child absent for it. Absences are only read for days
+   * that have lessons. A failure is reported and returns null.
+   */
+  private async fetchSchoolDays(profile: ProfileMapping, client: WilmaClient): Promise<SchoolDay[] | null> {
+    try {
+      const { dates, weekDates } = schoolDayWindow(this.now());
+      const lessons = [];
+      for (const date of weekDates) lessons.push(...await client.schedule.list({ date }));
+      const firstStarts = firstLessonStarts(lessons);
+      const days: SchoolDay[] = [];
+      for (const date of dates) {
+        const firstLessonStart = firstStarts.get(date) ?? null;
+        const absent = firstLessonStart
+          ? (await client.attendance.list({ date })).some((note) => note.date === date && isMorningAbsence(note, firstLessonStart))
+          : false;
+        days.push({ child: profile.child, date, firstLessonStart, absent });
+      }
+      return days;
+    } catch (error) {
+      if (error instanceof MfaCodeRequiredError) throw error;
+      this.diary.onSchoolDaysError?.(error);
+      return null;
+    }
   }
 
   /**
