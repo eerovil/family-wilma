@@ -212,7 +212,9 @@ managed-calendar and calendar-sharing permissions.
 Publish the Google OAuth app (Google Cloud console → **Google Auth Platform → Audience → Publish
 app**). While it is in **Testing**, Google lets the Calendar permission lapse after seven days. When
 Google reports the permission expired (`invalid_grant`), Family Wilma forgets the stored credentials
-and the page asks the owner to **Yhdistä Google Calendar** again.
+and the page asks the owner to **Yhdistä Google Calendar** again. The owner can also sign in to
+Google Calendar again at any time with **Kirjaudu Google Calendariin uudelleen** on the message
+view and in **Asetukset**.
 
 The first sync creates **Family Wilma – yhteiset** and one **[Child] – Lukujärjestys**
 calendar for every discovered child. Their ids are remembered locally. Family Wilma puts a

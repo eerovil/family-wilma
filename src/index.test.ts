@@ -231,6 +231,11 @@ test("health stays public while application pages require Google sign-in", async
     const afterFailedSync = await (await fetch(`http://127.0.0.1:${port}/messages`, {
       headers: { cookie: `family_wilma_session=${token}` },
     })).text();
+    assert.match(afterFailedSync, /href="\/oauth\/google\/calendar\/start\?returnTo=%2Fmessages">Yhdistä Google Calendar<\/a>/);
+    const setupHtml = await (await fetch(`http://127.0.0.1:${port}/setup`, {
+      headers: { cookie: `family_wilma_session=${token}` },
+    })).text();
+    assert.match(setupHtml, /href="\/oauth\/google\/calendar\/start\?returnTo=%2Fsetup">Yhdistä Google Calendar<\/a>/);
     assert.match(afterFailedSync, /data-last-calendar-sync="error">Viimeisin synkronointi .* epäonnistui\. Google Calendarin kirjautuminen on vanhentunut/);
     const syncOnly = await fetch(`http://127.0.0.1:${port}/messages/analyze`, {
       method: "POST",
