@@ -28,7 +28,12 @@ import { transientStatus } from "./message-status.js";
 import { THEME_COLOR } from "./pwa-content.js";
 import { pwaAsset } from "./pwa.js";
 import { BackgroundRefresh } from "./background-refresh.js";
-import { HOME_ASSISTANT_SCHOOL_DAYS_PATH, homeAssistantSchoolDays } from "./home-assistant.js";
+import {
+  HOME_ASSISTANT_SCHOOL_DAYS_PATH,
+  KITCHEN_HOMEWORK_PATH,
+  homeAssistantSchoolDays,
+  kitchenHomework,
+} from "./home-assistant.js";
 
 initializeErrorReporting({
   dsn: process.env.SENTRY_DSN,
@@ -483,6 +488,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify(reply.body));
       return;
     }
+    if (req.method === "GET" && url.pathname === KITCHEN_HOMEWORK_PATH) {
+      const reply = kitchenHomework(config.homeAssistantToken, req.headers.authorization, homeworkRefresh.snapshot(), new Date());
+      res.writeHead(reply.status, { "content-type": "application/json", "cache-control": "no-store" });
+      res.end(JSON.stringify(reply.body));
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/oauth/google/start") {
       const state = sessions.createOAuthState(url.searchParams.get("returnTo"), "login");
       res.setHeader("set-cookie", oauthStateCookie(state, secureCookies));
@@ -661,7 +672,7 @@ function knownRoute(pathname: string): string {
     "/", "/healthz", "/oauth/google/start", "/oauth/google/calendar/start", "/oauth/google/callback", "/setup",
     "/logout", "/homework", "/homework/refresh", "/messages", "/messages/refresh", "/messages/analyze", "/mfa",
     "/calendar/drop",
-    "/setup/discover", HOME_ASSISTANT_SCHOOL_DAYS_PATH,
+    "/setup/discover", HOME_ASSISTANT_SCHOOL_DAYS_PATH, KITCHEN_HOMEWORK_PATH,
   ]).has(pathname) ? pathname : "unknown";
 }
 
