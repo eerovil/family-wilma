@@ -53,7 +53,20 @@ a wake-up light. The reply holds nothing else:
   "children": { "Einari": [{ "date": "2026-10-05", "firstLessonStart": "08:30", "absent": false }] } }
 ```
 
-The address does not exist while `HOME_ASSISTANT_TOKEN` is empty. An absence counts when its mark
+The kitchen voice assistant reads the saved homework with the same token from
+`GET /api/kitchen/homework` (eerovil/eeron-omat-taskit#218): homework, lesson-diary entries
+(`source: "diary"`), exams and Peda.net class-page homework from the last 14 days onward, oldest
+first, with only the child, date, subject and text:
+
+```json
+{ "fetchedAt": "2026-10-05T03:00:00.000Z",
+  "homework": [{ "child": "Einari", "date": "2026-10-02", "subject": "Matematiikka", "text": "s. 40", "source": "homework" }],
+  "exams": [{ "child": "Einari", "date": "2026-10-09", "subject": "Biologia", "text": "Kasvit" }],
+  "classPageFetchedAt": "2026-10-05T03:01:00.000Z",
+  "classPage": [{ "date": "2026-10-05", "heading": "ma 5.10.", "text": "Lue kirjaa" }] }
+```
+
+The addresses do not exist while `HOME_ASSISTANT_TOKEN` is empty. An absence counts when its mark
 falls in or before the first lesson's hour; Wilma only shows absences that have been reported to it.
 
 Family Wilma is installable as a PWA. Its service worker uses the network first and stores

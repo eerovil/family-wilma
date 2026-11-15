@@ -77,6 +77,13 @@ the dates from today to a week ahead, the first lesson's start time and an absen
 subjects, teachers, messages or homework. Anyone holding the token can read that, so use a long
 random value and keep it only in the server's `.env` and Home Assistant's secrets.
 
+The same token also opens `GET /api/kitchen/homework`, for the family's kitchen voice assistant
+(eerovil/eeron-omat-taskit#218; sharing the token was the owner's choice there). It returns the
+saved homework, lesson-diary entries, exams and Peda.net class-page homework from the last 14 days
+onward: the child's name, the date, the subject and the text. No teachers, student numbers or
+messages. The kitchen host reads the token from Home Assistant's secrets, so anyone holding it can
+read that homework too.
+
 Sessions are random opaque values stored only as SHA-256 hashes in SQLite. They expire one year
 after their most recent use and can be revoked by signing out. In production, cookies are
 host-only, Secure, HTTP-only and SameSite restricted. Google OAuth attempts are bound to the
